@@ -1,0 +1,35 @@
+# --- Secrets & private data (never commit) ---
+.env
+cookies.txt
+urls.txt
+*.log
+
+# --- Generated data ---
+output/
+transcripts/
+temp_audio/
+
+# --- Recordings: never commit audio/video (except the bundled sample) ---
+*.mp3
+*.mp4
+*.m4a
+*.wav
+*.ogg
+*.opus
+*.flac
+*.aac
+*.webm
+*.mkv
+*.mov
+!examples/*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
