@@ -203,6 +203,10 @@ class Transcriber:
         )
         self.device = device
 
+    @property
+    def loaded(self) -> bool:
+        return self._model is not None
+
     def _can_fall_back(self) -> bool:
         return self.device == "cuda" and self.requested_device == "auto"
 
@@ -239,6 +243,8 @@ class Transcriber:
             vad_parameters={"min_silence_duration_ms": 500},
         )
         total = float(info.duration or 0.0)
+        if progress and total > 0:
+            progress(0.0, 0.0, total)  # the length is known before the first segment
         result: list[Segment] = []
         for seg in segments:
             text = seg.text.strip()

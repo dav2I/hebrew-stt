@@ -1,4 +1,4 @@
-"""Command line: `hebrew-stt FILE...`. Without files it opens the window."""
+"""Command line: `hebrew-stt FILE...`. Without files it opens the page in the browser."""
 
 from __future__ import annotations
 
@@ -44,12 +44,15 @@ def build_parser() -> argparse.ArgumentParser:
         prog="hebrew-stt",
         description=(
             "Transcribe Hebrew audio/video locally, with an optional AI summary. "
-            "Run without files to open the window."
+            "Run without files to use it in the browser."
         ),
     )
     parser.add_argument("files", nargs="*", help="audio or video files, or folders that contain them")
     parser.add_argument("--no-summary", action="store_true", help="only transcribe, even if an API key is set")
-    parser.add_argument("-o", "--output-dir", type=Path, help="where to save results (default: next to each file)")
+    parser.add_argument(
+        "-o", "--output-dir", type=Path,
+        help="where to save results (default: next to each file; in the browser: Documents/hebrew-stt)",
+    )
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto", help="default: auto")
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Whisper model in CTranslate2 format (default: {DEFAULT_MODEL})")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -72,12 +75,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _setup_console()
 
     if not args.files:
-        try:
-            from .gui import run
-        except ImportError as exc:
-            log.error("The window needs Tk (%s). On Linux install python3-tk, or pass files: hebrew-stt FILE...", exc)
-            return 2
-        return run(model=args.model, device=args.device)
+        from .web import serve
+
+        return serve(model=args.model, device=args.device, output_dir=args.output_dir)
 
     missing = [name for name in args.files if not Path(name).exists()]
     for name in missing:

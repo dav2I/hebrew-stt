@@ -22,6 +22,11 @@ class Result:
     summary_error: Optional[str] = None
 
 
+def _write(path: Path, text: str) -> None:
+    """UTF-8 with LF line endings on every OS, so results are identical everywhere."""
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def is_media(path: Path) -> bool:
     return path.suffix.lower() in MEDIA_EXTENSIONS
 
@@ -54,8 +59,8 @@ def process_file(
     paths.text.parent.mkdir(parents=True, exist_ok=True)
 
     transcript = transcriber.transcribe(media, progress)
-    paths.text.write_text(transcript.text + "\n", encoding="utf-8")
-    paths.timestamps.write_text(transcript.timestamped_text() + "\n", encoding="utf-8")
+    _write(paths.text, transcript.text + "\n")
+    _write(paths.timestamps, transcript.timestamped_text() + "\n")
     result = Result(media, paths, transcript.duration)
 
     if settings is None or not settings.enabled:
@@ -66,7 +71,7 @@ def process_file(
     if on_status:
         on_status(f"Summarizing with {settings.model}...")
     try:
-        paths.summary.write_text(summarize(transcript.text, settings, title=media.stem), encoding="utf-8")
+        _write(paths.summary, summarize(transcript.text, settings, title=media.stem))
         result.summarized = True
     except Exception as exc:  # network, auth, quota... keep the transcript either way
         log.debug("Summary failed", exc_info=True)
