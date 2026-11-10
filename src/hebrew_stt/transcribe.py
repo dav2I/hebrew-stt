@@ -196,7 +196,7 @@ class Transcriber:
         from faster_whisper import WhisperModel
 
         path = self._model_path()
-        log.info("Loading the model on the %s (%s)...", device.upper(), compute_type)
+        log.info("Loading the model on the %s (%s)...", "GPU" if device == "cuda" else "CPU", compute_type)
         cpu_threads = min(8, os.cpu_count() or 4) if device == "cpu" else 0
         self._model = WhisperModel(
             path, device=device, compute_type=compute_type, cpu_threads=cpu_threads
