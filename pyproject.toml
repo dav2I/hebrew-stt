@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hebrew-stt"
+dynamic = ["version"]
+description = "Transcribe Hebrew audio and video locally with Whisper (ivrit-ai), with an optional AI summary."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "dav2I" }]
+keywords = ["hebrew", "whisper", "speech-to-text", "transcription", "ivrit-ai"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Natural Language :: Hebrew",
+]
+dependencies = [
+    "faster-whisper>=1.1",
+    "openai>=1.40",
+    "python-dotenv>=1.0",
+    "tkinterdnd2>=0.4",
+]
+
+[project.optional-dependencies]
+# NVIDIA GPU acceleration (Windows/Linux). Not needed for CPU or macOS.
+cuda = [
+    "nvidia-cublas-cu12; sys_platform != 'darwin'",
+    "nvidia-cudnn-cu12>=9,<10; sys_platform != 'darwin'",
+]
+dev = ["pytest>=8"]
+
+[project.scripts]
+hebrew-stt = "hebrew_stt.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "hebrew_stt.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
