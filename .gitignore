@@ -22,6 +22,9 @@ temp_audio/
 *.mkv
 *.mov
 !examples/*
+# ...but not the results of transcribing the sample
+examples/*.txt
+examples/*_summary.md
 
 # --- Python ---
 __pycache__/
