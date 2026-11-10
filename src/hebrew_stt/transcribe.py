@@ -56,8 +56,8 @@ _RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
 
 def safe_stem(name: str, max_length: int = 150) -> str:
     """Turn a file stem into a name that is valid on Windows, macOS and Linux."""
-    stem = _INVALID_CHARS.sub("", name)
-    stem = re.sub(r"\s+", " ", stem).strip(" .")
+    stem = re.sub(r"\s+", " ", name)
+    stem = _INVALID_CHARS.sub("", stem).strip(" .")
     stem = stem[:max_length].rstrip(" .")
     if not stem:
         return "transcript"
