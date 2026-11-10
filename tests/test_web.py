@@ -114,8 +114,9 @@ def test_same_name_does_not_overwrite_earlier_results(server):
 
 def test_unsupported_upload_is_rejected(server):
     app, port = server
-    status, data = upload(port, app.token, "notes.txt")
-    assert status == 400 and "Not an audio or video file" in data["error"]
+    status, data = upload(port, app.token, "הערות.txt")
+    # The page shows this error on the file's card, so the name is not repeated in it.
+    assert (status, data["error"]) == (400, "Not an audio or video file.")
 
 
 def test_settings_never_send_the_key_back(server):

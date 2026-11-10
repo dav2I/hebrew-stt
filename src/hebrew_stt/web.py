@@ -122,7 +122,8 @@ class WebApp:
     def add_upload(self, name: str, stream: BinaryIO, length: int, summarize: bool) -> Job:
         suffix = Path(name).suffix.lower()
         if suffix not in MEDIA_EXTENSIONS:
-            raise ValueError(f"Not an audio or video file: {name or '(no name)'}")
+            # No name in the message: the page shows it on the file's card, which already has the name.
+            raise ValueError("Not an audio or video file.")
         with self._lock:
             stem = self._reserve_stem(name)
         job_id = uuid.uuid4().hex[:12]

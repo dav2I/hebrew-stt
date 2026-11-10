@@ -96,7 +96,7 @@
   <div id="jobs"></div>
 
   <footer>
-    <span class="muted">Results are also saved in <span id="out-dir"></span></span>
+    <span class="muted">Results are also saved in <bdi id="out-dir" dir="ltr"></bdi></span>
     <button id="open-folder" type="button">Open folder</button>
   </footer>
 </main>
@@ -155,6 +155,13 @@ function el(tag, props = {}, ...children) {
   return node;
 }
 
+// File names and paths are shown the way the file manager shows them: an isolated
+// left-to-right run. With dir="auto" (or a bare <bdi>) a name that starts with Hebrew
+// becomes right-to-left and its extension jumps to the left: "mp3.שיעור".
+function fileName(text) {
+  return el("bdi", { dir: "ltr", textContent: text });
+}
+
 // ------------------------------------------------------------------ cards
 
 function newCard(name) {
@@ -167,7 +174,7 @@ function newCard(name) {
     viewer: null, job: null, open: null,
   };
   card.root.append(
-    el("div", { className: "job-head" }, el("span", { className: "job-name", dir: "auto", textContent: name }), card.state),
+    el("div", { className: "job-head" }, el("span", { className: "job-name" }, fileName(name)), card.state),
     el("div", { className: "track" }, card.fill),
     card.note, card.tabs,
   );
@@ -366,9 +373,9 @@ async function openSettings() {
   $("remove-key").hidden = !s.saved.has_key;
   $("base-url").value = s.saved.base_url;
   $("model").value = s.saved.model;
-  $("settings-info").textContent =
-    `Saved only on this computer: ${s.path}` +
-    (s.external ? ". Environment variables or a .env file are also set and take precedence." : "");
+  $("settings-info").replaceChildren(
+    "Saved only on this computer: ", fileName(s.path),
+    s.external ? ". Environment variables or a .env file are also set and take precedence." : "");
   $("settings-error").hidden = true;
   $("settings").showModal();
 }
