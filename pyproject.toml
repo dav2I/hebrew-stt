@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hebrew-stt"
 dynamic = ["version"]
-description = "Transcribe Hebrew audio and video locally with Whisper (ivrit-ai), with an optional AI summary."
+description = "Transcribe Hebrew (or English) audio and video locally with Whisper, with optional AI summaries and questions."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

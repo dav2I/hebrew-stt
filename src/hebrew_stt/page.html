@@ -281,6 +281,7 @@ function render(card, job) {
   card.note.hidden = !(problem || info);
   card.note.textContent = problem || info;
   card.note.classList.toggle("info", !problem);
+  if (job.files.summary && !card.style) card.style = job.style;  // the style it was summarized in
   if (job.state === "done" && !card.result) showResult(card, job.result, job.files, true);
 }
 

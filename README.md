@@ -1,13 +1,15 @@
 # hebrew-stt
 
-Transcribe Hebrew audio and video on your own computer, with an optional AI summary.
+Transcribe Hebrew (or English) audio and video on your own computer, with an optional AI summary.
 
 ![Dropping a Hebrew recording into hebrew-stt and reading the transcript](docs/demo.gif)
 
-- **Local transcription** with Whisper fine-tuned for Hebrew by [ivrit-ai](https://huggingface.co/ivrit-ai) (`ivrit-ai/whisper-large-v3-turbo-ct2`), run by [faster-whisper](https://github.com/SYSTRAN/faster-whisper).
+- **Local transcription** with [faster-whisper](https://github.com/SYSTRAN/faster-whisper): Hebrew with Whisper fine-tuned by [ivrit-ai](https://huggingface.co/ivrit-ai) (`ivrit-ai/whisper-large-v3-turbo-ct2`), English with [distil-whisper](https://huggingface.co/distil-whisper/distil-large-v3.5-ct2) (`distil-large-v3.5`, English-only, about as accurate as Whisper large-v3 and much faster).
+- **Names and terms**: list the lecturer's name or course terms and they are recognized and spelled better.
 - **Any computer**: uses an NVIDIA GPU when available, otherwise the CPU. Windows, macOS and Linux.
-- **A simple page in your browser**: drop files, follow the progress (or stop a file), read, copy or download the result. A **command line** does the same thing.
-- **Optional summary** through any OpenAI-compatible API (DeepSeek by default). Without an API key, nothing leaves your computer.
+- **A simple page in your browser**: drop files, follow the progress (or stop a file), read, copy or download the result. Click a line to **listen from that moment** while the text follows along. Earlier results are listed too. A **command line** does the same thing.
+- **Subtitles**: every result also comes as an `.srt` file for a video player.
+- **Optional AI** through any OpenAI-compatible API (DeepSeek by default): summaries in the style you pick (very short, lecture notes, meeting, phone call, chapters with times, study questions and more), and **questions about a recording** answered from its transcript. Without an API key, nothing leaves your computer.
 
 ## Quick start
 
@@ -21,7 +23,7 @@ pipx install git+https://github.com/dav2I/hebrew-stt
 hebrew-stt
 ```
 
-That opens hebrew-stt in your browser. Drop audio or video files on the page and the transcript appears when it is ready. Keep the terminal window open while you use the page; press Ctrl+C there to stop.
+That opens hebrew-stt in your browser. Pick the language, drop audio or video files on the page, and the transcript appears when it is ready. Keep the terminal window open while you use the page; press Ctrl+C there to stop.
 
 Or use the command line:
 
@@ -29,7 +31,7 @@ Or use the command line:
 hebrew-stt lecture.mp3 meeting.m4a
 ```
 
-The first run downloads the model (about 1.6 GB) from Hugging Face. After that it works offline.
+The first time you use a language, its model is downloaded from Hugging Face (about 1.6 GB for Hebrew, 1.5 GB for English). After that it works offline. For English recordings add `-l en`.
 
 No pipx? `pip install git+https://github.com/dav2I/hebrew-stt` works too, or from a clone: `pip install -e .`
 
@@ -50,17 +52,21 @@ This adds the CUDA 12 libraries (cuBLAS, cuDNN 9) from pip. On Windows they are 
 ## Usage
 
 ```
-hebrew-stt [FILE_OR_FOLDER ...] [--no-summary] [-o DIR] [--device auto|cuda|cpu] [--model NAME]
+hebrew-stt [FILE_OR_FOLDER ...] [-l he|en] [--terms TEXT] [--style STYLE] [--no-summary]
+           [-o DIR] [--device auto|cuda|cpu] [--model NAME]
 ```
 
 | Option | What it does |
 |---|---|
 | *(no files)* | Opens the page in your browser |
 | `FILE_OR_FOLDER` | Audio/video files, or folders containing them |
+| `-l, --language` | `he` (Hebrew, default) or `en` (English) |
+| `--terms` | Names and words that appear in the recordings, e.g. `"Dr. Cohen, Dijkstra"` |
+| `--style` | Summary style (see [AI](#ai-optional)), default `general` |
 | `--no-summary` | Only transcribe, even if an API key is set |
 | `-o, --output-dir` | Where to save results (see below) |
 | `--device` | `auto` (default), `cuda` or `cpu` |
-| `--model` | Another Whisper model in CTranslate2 format |
+| `--model` | Another Whisper model in CTranslate2 format for the chosen language, e.g. `distil-small.en` (336 MB) for a smaller English model |
 
 Each file produces:
 
@@ -68,15 +74,36 @@ Each file produces:
 |---|---|
 | `name.txt` | The transcript, one segment per line |
 | `name_timestamps.txt` | The transcript with times: `[01:02 -> 01:05] ...` |
+| `name.srt` | Subtitles for a video player |
 | `name_summary.md` | The AI summary, only when enabled |
 
-From the command line they are saved next to each input file. From the browser they are shown on the page and also saved in `Documents/hebrew-stt` (the page has an **Open folder** button). `-o` changes either location.
+From the command line they are saved next to each input file. From the browser they are shown on the page and also saved in `Documents/hebrew-stt` (the page has an **Open folder** button), and the page lists them under **Previous results**. `-o` changes either location.
+
+On the page, the **With timestamps** tab plays the recording from any line you click and highlights the line being played. The recording plays from your computer; for a previous result, choose the original file with **Listen along…**.
 
 Supported formats: mp3, m4a, wav, flac, ogg, opus, aac, wma, mp4, mkv, webm, mov, avi. No separate FFmpeg install is needed.
 
-## AI summary (optional)
+## AI (optional)
 
-The summary first detects what the recording is (a lecture, a meeting, a podcast or interview, a tutorial, a personal note) and then writes a Hebrew summary in a matching structure: key concepts for a lecture, decisions and action items for a meeting, and so on. Long recordings are summarized in parts and then merged.
+With an API key, hebrew-stt can summarize recordings and answer questions about them. Both use only the transcript text.
+
+**Summary styles** (`--style`, or the menu next to **Summarize with AI**):
+
+| Style | What you get |
+|---|---|
+| `general` | Detects what the recording is (lecture, meeting, call, podcast...) and summarizes it to match. The default |
+| `short` | One sentence and 3 to 5 key points |
+| `detailed` | A full summary by topic, in order |
+| `lecture` | Study notes: key concepts, definitions, examples, what the lecturer stressed, assignments and dates |
+| `meeting` | Decisions, action items with owners and deadlines, open questions |
+| `call` | Who called and why, what was agreed, next steps, and the dates, numbers and names that were said |
+| `interview` | Main ideas, notable quotes, conclusions |
+| `chapters` | Chapters with start times, like on a video |
+| `quiz` | Study questions with answers |
+
+The summary is written in the language of the recording. Long recordings are summarized in parts and then merged. On the page, the **Summary** tab can also summarize an earlier result again in another style.
+
+**Ask** (on the page): ask questions about a recording, like "what did they decide about the budget?" The answer comes only from the transcript and points at moments like [12:34], which play the recording from there.
 
 To turn it on, click **Settings** on the page and enter an API key. Or set these in your environment or in a `.env` file in the folder you run from (see [`.env.example`](.env.example)):
 
@@ -99,10 +126,10 @@ On macOS and Linux the file is readable only by your user. The page never sends 
 ## Privacy
 
 - **Your audio never leaves your computer.** Transcription runs locally.
-- The page is served only to this computer (`127.0.0.1`), and every request needs the random key that is in the address hebrew-stt opens. Files you drop are copied to a temporary folder for transcription and deleted afterwards.
+- The page is served only to this computer (`127.0.0.1`, port 47820 when it is free), and every request needs the random key that is in the address hebrew-stt opens. Files you drop are copied to a temporary folder for transcription and deleted afterwards. The player plays the file straight from your computer.
 - The only network access is:
-  1. downloading the model from Hugging Face on the first run, and
-  2. if you turn on the summary, sending the **transcript text** (not the audio) to the provider you configured. Their privacy policy applies to that text.
+  1. downloading a language's model from Hugging Face the first time you use it, and
+  2. if you use the summary or **Ask**, sending the **transcript text** (and your question) to the provider you configured, never the audio. Their privacy policy applies to that text.
 - Your API key is stored only on your computer, in the Settings file or your own `.env`.
 
 ## Development
@@ -128,6 +155,7 @@ The tests need no model download and no network.
 ## Credits
 
 - [ivrit-ai](https://huggingface.co/ivrit-ai) for the Hebrew Whisper models
+- [distil-whisper](https://github.com/huggingface/distil-whisper) for the English model
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper) and [CTranslate2](https://github.com/OpenNMT/CTranslate2)
 - The sample recording is by Ariel Palmon, from Wikimedia Commons, under CC BY 3.0 ([details](examples/README.md))
 

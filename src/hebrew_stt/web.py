@@ -119,6 +119,7 @@ class Job:
             "id": self.id,
             "name": self.name,
             "result": self.media.stem,  # its files in the output folder are named after this
+            "style": self.style,
             "state": self.state,
             "progress": round(self.progress, 4),
             "position": self.position,
