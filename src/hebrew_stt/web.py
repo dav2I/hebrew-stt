@@ -375,9 +375,28 @@ class WebApp:
         shutil.rmtree(self.upload_dir, ignore_errors=True)
 
 
+class _Body:
+    """A request body that remembers how much of it is still unread."""
+
+    def __init__(self, stream: BinaryIO, length: int):
+        self.stream = stream
+        self.left = length
+
+    def read(self, size: int = -1) -> bytes:
+        size = self.left if size < 0 else min(size, self.left)
+        data = self.stream.read(size) if size > 0 else b""
+        self.left -= len(data)
+        return data
+
+    def discard(self) -> None:
+        while self.left > 0 and self.read(_CHUNK):
+            pass
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "hebrew-stt"
     page: bytes = b""
+    body: Optional[_Body] = None
 
     @property
     def app(self) -> WebApp:
@@ -396,6 +415,13 @@ class Handler(BaseHTTPRequestHandler):
         return secrets.compare_digest(token.encode(), self.app.token.encode())
 
     def _send(self, status: int, body: bytes, content_type: str, extra: Optional[dict] = None) -> None:
+        # Read what the client sent first, even when rejecting it: on Windows, closing a
+        # connection with unread data resets it, and the client never sees the answer.
+        if self.body is not None:
+            try:
+                self.body.discard()
+            except OSError:
+                pass
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -419,11 +445,17 @@ class Handler(BaseHTTPRequestHandler):
         self._send(403, _FORBIDDEN, "text/html; charset=utf-8")
         return False
 
+    def _start_body(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        self.body = _Body(self.rfile, max(0, length))
+
     def _read_json(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > 64_000:
+        if self.body.left > 64_000:
             raise ValueError("Request too large.")
-        data = json.loads(self.rfile.read(length) or b"{}")
+        data = json.loads(self.body.read() or b"{}")
         if not isinstance(data, dict):
             raise ValueError("Expected a JSON object.")
         return data
@@ -474,6 +506,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, path.read_bytes(), content_type, extra)
 
     def do_PUT(self) -> None:  # noqa: N802
+        self._start_body()
         url = urlparse(self.path)
         if not self._guard():
             return
@@ -487,7 +520,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(411, "Missing Content-Length.")
         try:
             job = self.app.add_upload(
-                name, self.rfile, length,
+                name, self.body, length,
                 summarize=query.get("summary", ["0"])[0] == "1",
                 style_name=query.get("style", [DEFAULT_STYLE])[0],
                 language=query.get("language", [DEFAULT_LANGUAGE])[0],
@@ -501,6 +534,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json(job.to_json(), 201)
 
     def do_POST(self) -> None:  # noqa: N802
+        self._start_body()
         url = urlparse(self.path)
         if not self._guard():
             return

@@ -163,6 +163,18 @@ def test_unsupported_upload_is_rejected(server):
     assert (status, data["error"]) == (400, "Not an audio or video file.")
 
 
+def test_a_rejected_large_upload_still_gets_its_answer(server):
+    # The server must read what was sent before answering: on Windows, closing a connection
+    # with unread data resets it, and the page would never see the error.
+    app, port = server
+    for _ in range(3):
+        status, data = upload(port, app.token, "talk.mp3", body=b"x" * 8_000_000, style="poem")
+        assert status == 400 and data["error"].startswith("Unknown summary style")
+        status, _, data = call(port, "POST", "/api/settings", b"{" + b" " * 2_000_000 + b"}", app.token)
+        assert status == 400 and json.loads(data)["error"] == "Request too large."
+        assert call(port, "PUT", "/api/upload?name=a.mp3", b"x" * 8_000_000, "wrong-token")[0] == 403
+
+
 def test_stop_a_running_and_a_queued_file(server, tmp_path):
     app, port = server
     slow = app.transcribers.transcriber = SlowTranscriber()
