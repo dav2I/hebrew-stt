@@ -48,6 +48,8 @@ from .transcribe import (
     clean_terms,
     guess_language,
     language_profile,
+    parse_srt,
+    parse_timestamped,
     result_paths,
     safe_stem,
 )
@@ -62,7 +64,7 @@ _CONTENT_TYPES = {".md": "text/markdown; charset=utf-8", ".srt": "application/x-
 _FINISHED = ("done", "failed", "cancelled")
 _CSP = (
     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-    "connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; "
+    "connect-src 'self'; img-src 'self' data:; media-src blob:; base-uri 'none'; form-action 'none'; "
     "frame-ancestors 'none'"
 )
 _FORBIDDEN = (
@@ -284,6 +286,20 @@ class WebApp:
                 })
         return sorted(found, key=lambda r: r["modified"], reverse=True)
 
+    def segments(self, stem: str) -> list[dict]:
+        """The transcript lines with their times, from the subtitles (or, for older results, the
+        timestamps file)."""
+        paths = self.result_paths(stem)
+        if paths is None:
+            raise KeyError(stem)
+        if paths.subtitles.is_file():
+            found = parse_srt(paths.subtitles.read_text(encoding="utf-8"))
+        elif paths.timestamps.is_file():
+            found = parse_timestamped(paths.timestamps.read_text(encoding="utf-8"))
+        else:
+            found = []
+        return [{"start": s.start, "end": s.end, "text": s.text} for s in found]
+
     def summarize_result(self, stem: str, style_name: str, terms: str = "") -> dict:
         """Write a new summary for a finished result, replacing the old one."""
         paths = self.result_paths(stem)
@@ -412,6 +428,11 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/results":
             return self._json({"results": self.app.results()})
         result = self._result_route(url.path)
+        if result and result[1] == "segments":
+            try:
+                return self._json({"segments": self.app.segments(result[0])})
+            except KeyError:
+                return self._error(404, "Not found.")
         if result:
             return self._result_file(*result, download="download" in parse_qs(url.query))
         self._error(404, "Not found.")

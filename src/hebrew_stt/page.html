@@ -66,7 +66,18 @@
   .note.info { color: var(--muted); }
   .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
   .tabs button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
-  .tabs button.link { margin-left: auto; align-self: center; font-size: 14px; }
+  .tabs .links { margin-left: auto; display: flex; gap: 14px; align-self: center; font-size: 14px; }
+  .player { margin-top: 10px; }
+  .player audio, .player video { width: 100%; display: block; }
+  .player video { max-height: 320px; background: #000; border-radius: 8px; }
+  .lines { max-height: 440px; overflow: auto; position: relative; }
+  .line { display: flex; gap: 12px; width: 100%; text-align: start; background: none; border: none;
+          border-radius: 6px; padding: 3px 8px; color: var(--text); cursor: pointer;
+          font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Arial, sans-serif; }
+  .line:hover { background: var(--accent-soft); }
+  .line.now { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .line time { flex: none; color: var(--muted); font-size: 13px; padding-top: 3px; font-variant-numeric: tabular-nums; }
+  .line span { flex: 1; }
   .viewer { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
   .viewer-tools { display: flex; gap: 6px; justify-content: flex-end; margin-bottom: 8px; flex-wrap: wrap; }
   .viewer-tools .grow { margin-right: auto; display: flex; gap: 6px; }
@@ -188,11 +199,11 @@ async function api(path, options = {}) {
   return data;
 }
 
-function clock(seconds) {
+function clock(seconds, withHours = false) {
   const s = Math.max(0, Math.floor(seconds || 0));
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
   const pad = (n) => String(n).padStart(2, "0");
-  return h ? `${pad(h)}:${pad(m)}:${pad(r)}` : `${pad(m)}:${pad(r)}`;
+  return h || withHours ? `${pad(h)}:${pad(m)}:${pad(r)}` : `${pad(m)}:${pad(r)}`;
 }
 
 function el(tag, props = {}, ...children) {
@@ -218,7 +229,9 @@ function newCard(name, parent = $("jobs")) {
     note: el("p", { className: "note", hidden: true }),
     tabs: el("div", { className: "tabs", hidden: true }),
     stop: el("button", { type: "button", className: "stop", textContent: "Stop" }),
+    playerBox: el("div", { className: "player", hidden: true }),
     viewer: null, job: null, open: null, xhr: null, result: null, files: {},
+    file: null, player: null, lines: null, linesBox: null, now: -1,
   };
   card.stop.addEventListener("click", () => stopJob(card));
   card.root.append(
@@ -226,7 +239,7 @@ function newCard(name, parent = $("jobs")) {
       el("span", { className: "job-name" }, fileName(name)),
       el("span", { className: "job-side" }, card.state, card.stop)),
     el("div", { className: "track" }, card.fill),
-    card.note, card.tabs,
+    card.note, card.playerBox, card.tabs,
   );
   parent.append(card.root);
   allCards.push(card);
@@ -281,12 +294,21 @@ function showResult(card, result, files, autoOpen) {
     button.addEventListener("click", () => toggleView(card, kind));
     card.tabs.append(button);
   }
+  if (card.file && !card.player) attachMedia(card, card.file);
+  const links = el("span", { className: "links" });
+  if (!card.player) {
+    const listen = el("button", { type: "button", className: "link", textContent: "Listen along…" });
+    listen.title = "Choose the original recording to play it with the transcript";
+    listen.addEventListener("click", () => chooseMedia(card));
+    links.append(listen);
+  }
   if (files.subtitles) {
     const srt = el("button", { type: "button", className: "link", textContent: "Subtitles (.srt)" });
     srt.title = "Download subtitles for a video player";
     srt.addEventListener("click", () => download(resultUrl(card, "subtitles")));
-    card.tabs.append(srt);
+    links.append(srt);
   }
+  card.tabs.append(links);
   card.tabs.hidden = false;
   if (autoOpen && !allCards.some((c) => c.open)) toggleView(card, files.summary ? "summary" : "text");
 }
@@ -294,6 +316,8 @@ function showResult(card, result, files, autoOpen) {
 function toggleView(card, kind) {
   if (card.viewer) card.viewer.remove();
   card.viewer = null;
+  card.lines = card.linesBox = null;
+  card.now = -1;
   const closing = card.open === kind;
   card.open = closing ? null : kind;
   for (const b of card.tabs.querySelectorAll("button[data-kind]")) {
@@ -305,6 +329,7 @@ function toggleView(card, kind) {
   card.viewer = el("div", { className: "viewer" }, tools, body);
   card.root.append(card.viewer);
   if (kind === "summary") showSummary(card, tools, body);
+  else if (kind === "timestamps") showTimestamps(card, tools, body);
   else showText(card, kind, tools, body);
 }
 
@@ -333,6 +358,102 @@ async function loadText(url, body, tools) {
 
 function showText(card, kind, tools, body) {
   loadText(resultUrl(card, kind), body, tools);
+}
+
+// ------------------------------------------------- listen while reading
+
+const VIDEO = /\.(mp4|mkv|webm|mov|avi)$/i;
+
+// The recording plays from this computer (the file you dropped or chose); nothing is uploaded for it.
+function attachMedia(card, file) {
+  const media = el(VIDEO.test(file.name) ? "video" : "audio", { controls: true, preload: "metadata" });
+  media.src = URL.createObjectURL(file);
+  media.addEventListener("timeupdate", () => highlight(card));
+  media.addEventListener("error", () => {
+    card.playerBox.replaceChildren(el("p", {
+      className: "muted", textContent: "This browser cannot play this file. The transcript is still here.",
+    }));
+  });
+  card.player = media;
+  card.playerBox.replaceChildren(media);
+  card.playerBox.hidden = false;
+}
+
+function chooseMedia(card) {
+  const input = el("input", { type: "file", accept: "audio/*,video/*" });
+  input.addEventListener("change", () => {
+    const file = input.files[0];
+    if (!file) return;
+    card.file = file;
+    showResult(card, card.result, card.files, false);
+    if (card.open !== "timestamps") toggleView(card, "timestamps");
+  });
+  input.click();
+}
+
+async function showTimestamps(card, tools, body) {
+  body.replaceChildren(el("p", { className: "muted", textContent: "Loading..." }));
+  let segments;
+  try {
+    segments = (await api(resultUrl(card, "segments"))).segments;
+  } catch (error) {
+    body.replaceChildren(el("p", { className: "note", textContent: `Could not load the file: ${error.message}` }));
+    return;
+  }
+  if (card.open !== "timestamps") return;  // another tab was opened meanwhile
+  if (!segments.length) {
+    body.replaceChildren(el("pre", { textContent: "No speech was found in this file." }));
+    return;
+  }
+  const long = segments[segments.length - 1].end >= 3600;
+  // dir="auto" would skip the lines (each has its own direction), so decide from their letters:
+  // Hebrew puts the times on the right.
+  const sample = segments.slice(0, 30).map((seg) => seg.text).join(" ");
+  const count = (re) => (sample.match(re) || []).length;
+  const box = el("div", { className: "lines", dir: count(/[א-ת]/g) >= count(/[A-Za-z]/g) ? "rtl" : "ltr" });
+  card.lines = segments.map((seg) => {
+    const row = el("button", { type: "button", className: "line" },
+      el("time", { textContent: clock(seg.start, long) }), el("span", { dir: "auto", textContent: seg.text }));
+    row.title = card.player ? "Play from here" : "Use “Listen along…” to play from here";
+    row.addEventListener("click", () => {
+      if (!card.player) return;
+      card.player.currentTime = seg.start;
+      card.player.play().catch(() => {});
+    });
+    box.append(row);
+    return { row, start: seg.start };
+  });
+  card.linesBox = box;
+  body.replaceChildren(box);
+  const url = resultUrl(card, "timestamps");
+  const copy = el("button", { type: "button", textContent: "Copy" });
+  copy.addEventListener("click", async () => {
+    const response = await fetch(url, { headers: { "X-Token": TOKEN } });
+    await navigator.clipboard.writeText(await response.text());
+    copy.textContent = "Copied";
+    setTimeout(() => (copy.textContent = "Copy"), 1500);
+  });
+  const save = el("button", { type: "button", textContent: "Download" });
+  save.addEventListener("click", () => download(url));
+  tools.append(copy, save);
+  highlight(card);
+}
+
+// Mark the line being played and keep it in view.
+function highlight(card) {
+  if (!card.player || !card.lines) return;
+  const t = card.player.currentTime;
+  let i = card.lines.length - 1;
+  while (i > 0 && card.lines[i].start > t) i -= 1;
+  if (i === card.now) return;
+  if (card.now >= 0) card.lines[card.now].row.classList.remove("now");
+  card.now = i;
+  const row = card.lines[i].row;
+  row.classList.add("now");
+  const box = card.linesBox;
+  if (row.offsetTop < box.scrollTop || row.offsetTop + row.offsetHeight > box.scrollTop + box.clientHeight) {
+    box.scrollTop = row.offsetTop - box.clientHeight / 3;
+  }
 }
 
 function showSummary(card, tools, body) {
@@ -419,6 +540,7 @@ async function loadHistory() {
 
 function upload(file) {
   const card = newCard(file.name);
+  card.file = file;
   const ext = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".")).toLowerCase() : "";
   if (!EXTENSIONS.includes(ext)) {
     setState(card, "Not an audio or video file", "failed");

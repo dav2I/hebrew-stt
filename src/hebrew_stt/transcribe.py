@@ -186,6 +186,27 @@ class Transcript:
         )
 
 
+_TIMESTAMPED_LINE = re.compile(r"^\[((?:\d+:)?\d{2}:\d{2}) -> ((?:\d+:)?\d{2}:\d{2})\] ?(.*)$")
+
+
+def _clock_seconds(clock: str) -> float:
+    seconds = 0
+    for part in clock.split(":"):
+        seconds = seconds * 60 + int(part)
+    return float(seconds)
+
+
+def parse_timestamped(text: str) -> list[Segment]:
+    """Read a `_timestamps.txt` file back into segments (whole seconds)."""
+    segments = []
+    for line in text.splitlines():
+        match = _TIMESTAMPED_LINE.match(line.strip())
+        if match and match.group(3).strip():
+            segments.append(Segment(_clock_seconds(match.group(1)), _clock_seconds(match.group(2)),
+                                    match.group(3).strip()))
+    return segments
+
+
 def parse_srt(text: str) -> list[Segment]:
     """Read SubRip subtitles back into segments (a cue's lines are joined with spaces)."""
     segments = []

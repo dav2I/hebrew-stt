@@ -114,6 +114,7 @@ def test_page_needs_the_token(server):
     assert call(port, "GET", "/?t=wrong")[0] == 403
     status, headers, body = call(port, "GET", f"/?t={app.token}")
     assert status == 200
+    assert "media-src blob:" in headers["Content-Security-Policy"]  # the player plays local files
     assert b"<title>Hebrew STT</title>" in body
     assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
 
@@ -290,6 +291,18 @@ def test_summarize_a_result_again_in_another_style(server, tmp_path, monkeypatch
     assert seen["text"] == "[00:00 -> 00:02] שלום\n"  # chapters reads the times
     assert seen["language"] == "he" and seen["terms"] == "Dr. Cohen" and seen["title"] == "talk"
     assert again("poem")[0] == 400
+
+
+def test_segments_come_from_the_subtitles_or_the_timestamps(server, tmp_path):
+    app, port = server
+    job = wait_done(port, app.token, upload(port, app.token, "talk.mp3")[1]["id"])
+    _, _, body = call(port, "GET", f"/api/results/{job['result']}/segments", token=app.token)
+    assert json.loads(body) == {"segments": [{"start": 0.0, "end": 2.0, "text": "שלום"}]}
+    (tmp_path / "out" / "older.txt").write_text("hi", encoding="utf-8")  # made before subtitles existed
+    (tmp_path / "out" / "older_timestamps.txt").write_text("[00:05 -> 00:09] hi\n", encoding="utf-8")
+    _, _, body = call(port, "GET", "/api/results/older/segments", token=app.token)
+    assert json.loads(body)["segments"] == [{"start": 5.0, "end": 9.0, "text": "hi"}]
+    assert call(port, "GET", "/api/results/missing/segments", token=app.token)[0] == 404
 
 
 def test_settings_never_send_the_key_back(server):

@@ -1,6 +1,6 @@
 import pytest
 
-from hebrew_stt.transcribe import Segment, Transcript, format_timestamp, parse_srt, srt_time
+from hebrew_stt.transcribe import Segment, Transcript, format_timestamp, parse_srt, parse_timestamped, srt_time
 
 
 @pytest.mark.parametrize(
@@ -68,3 +68,11 @@ def test_subtitles_from_other_programs():
     text = "1\n00:00:01.000 --> 00:00:02.000\nfirst line\nsecond line\n\n2\n00:00:03,000 --> 00:00:04,000\n\n"
     assert parse_srt(text) == [Segment(1.0, 2.0, "first line second line")]
     assert Transcript([], 0).srt() == "" and parse_srt("") == []
+
+
+def test_timestamps_file_round_trip():
+    short = Transcript([Segment(1, 4, "שלום"), Segment(65, 70, "and more")], 70)
+    assert parse_timestamped(short.timestamped_text()) == short.segments
+    long = Transcript([Segment(3599, 3605, "שעה")], 3605)
+    assert parse_timestamped(long.timestamped_text()) == long.segments
+    assert parse_timestamped("not a line\n[00:01 -> 00:02] \n") == []
