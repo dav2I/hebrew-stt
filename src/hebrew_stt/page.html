@@ -47,10 +47,15 @@
   .job-state { color: var(--muted); font-size: 14px; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .job-state.done { color: var(--ok); }
   .job-state.failed { color: var(--bad); }
+  .job-side { display: flex; align-items: baseline; gap: 10px; }
+  button.stop { font-size: 13px; padding: 2px 10px; }
+  button.stop:disabled { opacity: .6; cursor: default; }
+  .job.finished .stop { display: none; }
   .track { height: 6px; background: var(--track); border-radius: 3px; margin-top: 8px; overflow: hidden; }
   .fill { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
   .job.finished .track { display: none; }
   .note { color: var(--bad); font-size: 14px; margin: 6px 0 0; }
+  .note.info { color: var(--muted); }
   .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
   .tabs button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
   .viewer { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
@@ -129,6 +134,7 @@ const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const EXTENSIONS = [".mp3", ".m4a", ".wav", ".flac", ".ogg", ".opus", ".aac", ".wma",
                     ".mp4", ".mkv", ".webm", ".mov", ".avi"];
 const LABELS = { text: "Transcript", timestamps: "With timestamps", summary: "Summary" };
+const FINISHED = ["done", "failed", "cancelled"];
 const $ = (id) => document.getElementById(id);
 const cards = new Map();   // job id -> card
 let uploading = 0;
@@ -171,10 +177,14 @@ function newCard(name) {
     fill: el("div", { className: "fill" }),
     note: el("p", { className: "note", hidden: true }),
     tabs: el("div", { className: "tabs", hidden: true }),
-    viewer: null, job: null, open: null,
+    stop: el("button", { type: "button", className: "stop", textContent: "Stop" }),
+    viewer: null, job: null, open: null, xhr: null,
   };
+  card.stop.addEventListener("click", () => stopJob(card));
   card.root.append(
-    el("div", { className: "job-head" }, el("span", { className: "job-name" }, fileName(name)), card.state),
+    el("div", { className: "job-head" },
+      el("span", { className: "job-name" }, fileName(name)),
+      el("span", { className: "job-side" }, card.state, card.stop)),
     el("div", { className: "track" }, card.fill),
     card.note, card.tabs,
   );
@@ -201,12 +211,15 @@ function render(card, job) {
     case "summarizing": setState(card, "Summarizing...", "", 1); break;
     case "done": setState(card, `Done · ${clock(job.duration)}`, "done", 1); break;
     case "failed": setState(card, "Failed", "failed"); break;
+    case "cancelled": setState(card, "Stopped"); break;
   }
-  const finished = job.state === "done" || job.state === "failed";
-  card.root.classList.toggle("finished", finished);
+  card.root.classList.toggle("finished", FINISHED.includes(job.state));
+  card.stop.textContent = job.state === "summarizing" ? "Skip summary" : "Stop";
   const problem = job.error || (job.summary_error && `Summary failed: ${job.summary_error}`);
-  card.note.hidden = !problem;
-  card.note.textContent = problem || "";
+  const info = job.summary_cancelled ? "Summary skipped. The transcript is ready." : "";
+  card.note.hidden = !(problem || info);
+  card.note.textContent = problem || info;
+  card.note.classList.toggle("info", !problem);
   if (job.state === "done" && card.tabs.hidden) {
     for (const kind of ["summary", "text", "timestamps"]) {
       if (!job.files[kind]) continue;
@@ -259,6 +272,19 @@ async function toggleView(card, kind) {
   });
 }
 
+async function stopJob(card) {
+  card.stop.disabled = true;
+  if (!card.job) {             // still uploading: nothing reached the server yet
+    if (card.xhr) card.xhr.abort();
+    return;
+  }
+  try {
+    render(card, await api(`/api/jobs/${card.job.id}/cancel`, { method: "POST" }));
+  } catch (_) {
+    card.stop.disabled = false;
+  }
+}
+
 // ---------------------------------------------------------------- uploads
 
 function upload(file) {
@@ -291,6 +317,8 @@ function upload(file) {
     }
   };
   xhr.onerror = () => { done(); setState(card, "Upload failed", "failed"); card.root.classList.add("finished"); };
+  xhr.onabort = () => { done(); setState(card, "Stopped"); card.root.classList.add("finished"); };
+  card.xhr = xhr;
   uploading += 1;
   setState(card, "Uploading 0%", "", 0);
   xhr.send(file);
@@ -325,7 +353,7 @@ async function refresh() {
     if (!cards.has(job.id)) cards.set(job.id, newCard(job.name));
     render(cards.get(job.id), job);
   }
-  return data.jobs.some((job) => job.state !== "done" && job.state !== "failed");
+  return data.jobs.some((job) => !FINISHED.includes(job.state));
 }
 
 async function poll() {

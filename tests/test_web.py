@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 import pytest
 
-from hebrew_stt import web
+from hebrew_stt import core, web
 from hebrew_stt.transcribe import Segment, Transcript
 
 
@@ -57,19 +57,41 @@ def call(port, method, path, body=None, token=None, host=None, headers=None):
     return response.status, response.headers, data
 
 
-def upload(port, token, name, body=b"fake audio"):
-    status, _, data = call(port, "PUT", f"/api/upload?name={quote(name)}&summary=0", body, token)
+def upload(port, token, name, body=b"fake audio", summary=False):
+    path = f"/api/upload?name={quote(name)}&summary={int(summary)}"
+    status, _, data = call(port, "PUT", path, body, token)
     return status, json.loads(data)
 
 
-def wait_done(port, token, job_id):
-    for _ in range(100):
+def cancel(port, token, job_id):
+    status, _, data = call(port, "POST", f"/api/jobs/{job_id}/cancel", b"", token)
+    return status, json.loads(data)
+
+
+def wait_state(port, token, job_id, states):
+    for _ in range(200):
         _, _, data = call(port, "GET", "/api/jobs", token=token)
         job = next(j for j in json.loads(data)["jobs"] if j["id"] == job_id)
-        if job["state"] in ("done", "failed"):
+        if job["state"] in states:
             return job
         time.sleep(0.05)
-    raise AssertionError("job did not finish")
+    raise AssertionError(f"job never reached {states}")
+
+
+def wait_done(port, token, job_id):
+    return wait_state(port, token, job_id, ("done", "failed", "cancelled"))
+
+
+class SlowTranscriber(FakeTranscriber):
+    """Runs until the test releases it, reporting progress like a long recording."""
+
+    def __init__(self):
+        self.release = threading.Event()
+
+    def transcribe(self, media, progress=None):
+        while not self.release.wait(0.02):
+            progress(0.5, 1.0, 2.0)
+        return super().transcribe(media, progress)
 
 
 def test_page_needs_the_token(server):
@@ -117,6 +139,54 @@ def test_unsupported_upload_is_rejected(server):
     status, data = upload(port, app.token, "הערות.txt")
     # The page shows this error on the file's card, so the name is not repeated in it.
     assert (status, data["error"]) == (400, "Not an audio or video file.")
+
+
+def test_stop_a_running_and_a_queued_file(server, tmp_path):
+    app, port = server
+    app.transcriber = SlowTranscriber()
+    running = upload(port, app.token, "long.mp3")[1]
+    queued = upload(port, app.token, "next.mp3")[1]
+    wait_state(port, app.token, running["id"], ("transcribing",))
+
+    assert cancel(port, app.token, queued["id"]) == (200, {**queued, "state": "cancelled"})
+    assert cancel(port, app.token, running["id"])[1]["state"] == "cancelled"
+
+    # The worker drops both, so the next file runs, and the stopped name is free again.
+    app.transcriber.release.set()
+    again = wait_done(port, app.token, upload(port, app.token, "long.mp3")[1]["id"])
+    assert again["files"]["text"] == "long.txt"
+    assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["long.txt", "long_timestamps.txt"]
+    for job in (running, queued):
+        assert wait_done(port, app.token, job["id"])["state"] == "cancelled"
+
+
+def test_skip_summary_keeps_the_transcript(server, monkeypatch):
+    app, port = server
+    monkeypatch.setenv("SUMMARY_API_KEY", "test-key")
+    started, release = threading.Event(), threading.Event()
+
+    def slow_summary(*_args, **_kwargs):
+        started.set()
+        release.wait(10)
+        return "too late"
+
+    monkeypatch.setattr(core, "summarize", slow_summary)
+    job = upload(port, app.token, "talk.mp3", summary=True)[1]
+    try:
+        assert started.wait(10)
+        assert cancel(port, app.token, job["id"])[1]["state"] == "summarizing"
+        job = wait_done(port, app.token, job["id"])
+    finally:
+        release.set()
+    assert job["state"] == "done" and job["summary_cancelled"]
+    assert job["files"] == {"text": "talk.txt", "timestamps": "talk_timestamps.txt"}
+
+
+def test_stop_leaves_finished_and_unknown_files_alone(server):
+    app, port = server
+    job = wait_done(port, app.token, upload(port, app.token, "talk.wav")[1]["id"])
+    assert cancel(port, app.token, job["id"]) == (200, job)
+    assert call(port, "POST", "/api/jobs/nope/cancel", b"", app.token)[0] == 404
 
 
 def test_settings_never_send_the_key_back(server):

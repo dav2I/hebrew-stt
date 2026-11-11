@@ -1,3 +1,4 @@
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -121,6 +122,44 @@ def test_failed_summary_keeps_transcript(tmp_path, monkeypatch):
     result = core.process_file(media, FakeTranscriber(), KEYED, output_dir=tmp_path / "out")
     assert result.paths.text.exists()
     assert result.summary_error == "ConnectionError: offline"
+
+
+def test_stop_during_transcription_writes_nothing(tmp_path):
+    stop = threading.Event()
+
+    class StoppedMidway:
+        def transcribe(self, media, progress=None):
+            progress(0.5, 1.5, 3.0)  # first segment done
+            stop.set()  # the user clicks Stop
+            progress(1.0, 3.0, 3.0)  # the next segment notices
+            raise AssertionError("transcription went on after Stop")
+
+    media = tmp_path / "talk.mp3"
+    media.write_bytes(b"")
+    with pytest.raises(core.Cancelled):
+        core.process_file(media, StoppedMidway(), output_dir=tmp_path / "out", stop=stop)
+    assert not (tmp_path / "out" / "talk.txt").exists()
+
+
+def test_stop_during_summary_keeps_the_transcript(tmp_path, monkeypatch):
+    stop, started, release = threading.Event(), threading.Event(), threading.Event()
+
+    def slow_summary(*_args, **_kwargs):  # a provider that takes its time
+        started.set()
+        release.wait(10)
+        return "too late"
+
+    monkeypatch.setattr(core, "summarize", slow_summary)
+    threading.Thread(target=lambda: started.wait(10) and stop.set(), daemon=True).start()
+    media = tmp_path / "talk.mp3"
+    media.write_bytes(b"")
+    try:
+        result = core.process_file(media, FakeTranscriber(), KEYED, output_dir=tmp_path / "out", stop=stop)
+    finally:
+        release.set()
+    assert result.summary_cancelled and not result.summarized
+    assert result.paths.text.exists()
+    assert not result.paths.summary.exists()
 
 
 def test_cli_rejects_missing_files(tmp_path):

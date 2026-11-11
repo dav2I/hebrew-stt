@@ -19,14 +19,14 @@ import tempfile
 import threading
 import uuid
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 from typing import BinaryIO, Optional
 from urllib.parse import parse_qs, quote, urlparse
 
-from .core import process_file
+from .core import Cancelled, process_file
 from .summarize import SummarySettings, load_settings, read_saved_settings, save_settings, settings_file
 from .transcribe import MEDIA_EXTENSIONS, OutputPaths, Transcriber, safe_stem
 
@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 
 _CHUNK = 1 << 20
 _RESULT_KINDS = ("text", "timestamps", "summary")
+_FINISHED = ("done", "failed", "cancelled")
 _CSP = (
     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
     "connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; "
@@ -66,13 +67,16 @@ class Job:
     name: str
     media: Path
     summarize: bool
-    state: str = "queued"  # queued, loading, transcribing, summarizing, done, failed
+    state: str = "queued"  # queued, loading, transcribing, summarizing, done, failed, cancelled
     progress: float = 0.0
     position: float = 0.0
     duration: float = 0.0
     error: str = ""
     summary_error: str = ""
+    summary_cancelled: bool = False
     paths: Optional[OutputPaths] = None
+    stop: threading.Event = field(default_factory=threading.Event, repr=False, compare=False)
+    holds_name: bool = field(default=True, repr=False)  # its result name is still reserved
 
     def to_json(self) -> dict:
         files = {}
@@ -90,6 +94,7 @@ class Job:
             "duration": self.duration,
             "error": self.error,
             "summary_error": self.summary_error,
+            "summary_cancelled": self.summary_cancelled,
             "files": files,
         }
 
@@ -118,6 +123,12 @@ class WebApp:
             stem, n = f"{base} ({n})", n + 1
         self._reserved.add(stem.lower())
         return stem
+
+    def _release_name(self, job: Job) -> None:
+        """Called with the lock held. Once released, the files on disk decide whether the name is taken."""
+        if job.holds_name:
+            self._reserved.discard(job.media.stem.lower())
+            job.holds_name = False
 
     def add_upload(self, name: str, stream: BinaryIO, length: int, summarize: bool) -> Job:
         suffix = Path(name).suffix.lower()
@@ -150,6 +161,19 @@ class WebApp:
         self._queue.put(job)
         return job
 
+    def cancel(self, job_id: str) -> Optional[Job]:
+        """Stop a job. Before its transcript is written nothing is saved; during the
+        summary the transcript is kept and the summary is dropped."""
+        with self._lock:
+            job = self.jobs.get(job_id)
+            if job is None or job.state in _FINISHED:
+                return job
+            job.stop.set()
+            if job.state != "summarizing":
+                job.state = "cancelled"  # the worker notices at the next segment
+                self._release_name(job)  # so the same file can be dropped again right away
+            return job
+
     # -------------------------------------------------------------- worker
 
     def _worker(self) -> None:
@@ -157,31 +181,45 @@ class WebApp:
             job = self._queue.get()
             try:
                 self._run(job)
+            except Cancelled:
+                job.state = "cancelled"
             except Exception as exc:
                 log.exception("Failed: %s", job.name)
                 job.error = str(exc) or type(exc).__name__
                 job.state = "failed"
             finally:
                 shutil.rmtree(job.media.parent, ignore_errors=True)
+                with self._lock:
+                    self._release_name(job)
+
+    def _set_state(self, job: Job, state: str) -> None:
+        with self._lock:
+            if not job.stop.is_set():
+                job.state = state
 
     def _run(self, job: Job) -> None:
+        if job.stop.is_set():
+            raise Cancelled()
         if not self.transcriber.loaded:
-            job.state = "loading"
+            self._set_state(job, "loading")
             self.transcriber.load()
-        job.state = "transcribing"
+        self._set_state(job, "transcribing")
         settings = load_settings() if job.summarize else None
 
         def progress(fraction: float, position: float, total: float) -> None:
             job.progress, job.position, job.duration = fraction, position, total
 
         def status(_text: str) -> None:
-            job.state = "summarizing"
+            self._set_state(job, "summarizing")
 
-        result = process_file(job.media, self.transcriber, settings, self.output_dir, progress, status)
-        job.paths = result.paths
-        job.duration = result.duration
-        job.summary_error = result.summary_error or ""
-        job.state = "done"
+        result = process_file(job.media, self.transcriber, settings, self.output_dir, progress, status, job.stop)
+        with self._lock:
+            job.paths = result.paths
+            job.duration = result.duration
+            job.summary_error = result.summary_error or ""
+            job.summary_cancelled = result.summary_cancelled
+            if job.state != "cancelled":  # Stop that landed while the files were being written
+                job.state = "done"
 
     # ------------------------------------------------------------ settings
 
@@ -335,6 +373,10 @@ class Handler(BaseHTTPRequestHandler):
             self.app.output_dir.mkdir(parents=True, exist_ok=True)
             open_folder(self.app.output_dir)
             return self._json({"ok": True})
+        parts = url.path.strip("/").split("/")
+        if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "cancel":
+            job = self.app.cancel(parts[2])
+            return self._json(job.to_json()) if job else self._error(404, "Not found.")
         self._error(404, "Not found.")
 
 

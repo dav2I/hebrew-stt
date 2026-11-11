@@ -6,7 +6,7 @@ Transcribe Hebrew audio and video on your own computer, with an optional AI summ
 
 - **Local transcription** with Whisper fine-tuned for Hebrew by [ivrit-ai](https://huggingface.co/ivrit-ai) (`ivrit-ai/whisper-large-v3-turbo-ct2`), run by [faster-whisper](https://github.com/SYSTRAN/faster-whisper).
 - **Any computer**: uses an NVIDIA GPU when available, otherwise the CPU. Windows, macOS and Linux.
-- **A simple page in your browser**: drop files, follow the progress, read, copy or download the result. A **command line** does the same thing.
+- **A simple page in your browser**: drop files, follow the progress (or stop a file), read, copy or download the result. A **command line** does the same thing.
 - **Optional summary** through any OpenAI-compatible API (DeepSeek by default). Without an API key, nothing leaves your computer.
 
 ## Quick start
