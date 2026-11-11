@@ -24,9 +24,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 from typing import BinaryIO, Callable, Optional
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from .core import Cancelled, process_file
+from .core import Cancelled, process_file, write_text
 from .summarize import (
     DEFAULT_STYLE,
     STYLES,
@@ -36,6 +36,7 @@ from .summarize import (
     save_settings,
     settings_file,
     style,
+    summarize,
 )
 from .transcribe import (
     DEFAULT_LANGUAGE,
@@ -45,7 +46,9 @@ from .transcribe import (
     Transcriber,
     TranscriberPool,
     clean_terms,
+    guess_language,
     language_profile,
+    result_paths,
     safe_stem,
 )
 
@@ -67,6 +70,11 @@ _FORBIDDEN = (
     "<p style='font-family:system-ui;margin:40px'>This link is missing its access key. "
     "Open the full link that <b>hebrew-stt</b> printed in its terminal window.</p>"
 ).encode()
+
+
+def _files(paths: OutputPaths) -> dict:
+    """The result files that exist, by kind."""
+    return {kind: getattr(paths, kind).name for kind in _RESULT_KINDS if getattr(paths, kind).is_file()}
 
 
 def default_output_dir() -> Path:
@@ -104,15 +112,10 @@ class Job:
     holds_name: bool = field(default=True, repr=False)  # its result name is still reserved
 
     def to_json(self) -> dict:
-        files = {}
-        if self.paths and self.state == "done":
-            for kind in _RESULT_KINDS:
-                path = getattr(self.paths, kind)
-                if path.is_file():
-                    files[kind] = path.name
         return {
             "id": self.id,
             "name": self.name,
+            "result": self.media.stem,  # its files in the output folder are named after this
             "state": self.state,
             "progress": round(self.progress, 4),
             "position": self.position,
@@ -120,7 +123,7 @@ class Job:
             "error": self.error,
             "summary_error": self.summary_error,
             "summary_cancelled": self.summary_cancelled,
-            "files": files,
+            "files": _files(self.paths) if self.paths and self.state == "done" else {},
         }
 
 
@@ -259,6 +262,47 @@ class WebApp:
             if job.state != "cancelled":  # Stop that landed while the files were being written
                 job.state = "done"
 
+    # ------------------------------------------------------------- results
+
+    def result_paths(self, stem: str) -> Optional[OutputPaths]:
+        """The files of a result in the output folder. Only names that exist there are accepted."""
+        if not stem or Path(stem).name != stem:
+            return None
+        paths = result_paths(self.output_dir, stem)
+        return paths if paths.text.is_file() else None
+
+    def results(self) -> list[dict]:
+        """Every result in the output folder, newest first."""
+        found = []
+        if self.output_dir.is_dir():
+            for text in self.output_dir.glob("*.txt"):
+                if text.stem.endswith("_timestamps"):
+                    continue
+                paths = result_paths(self.output_dir, text.stem)
+                found.append({
+                    "id": text.stem, "name": text.stem, "modified": text.stat().st_mtime, "files": _files(paths),
+                })
+        return sorted(found, key=lambda r: r["modified"], reverse=True)
+
+    def summarize_result(self, stem: str, style_name: str, terms: str = "") -> dict:
+        """Write a new summary for a finished result, replacing the old one."""
+        paths = self.result_paths(stem)
+        if paths is None:
+            raise KeyError(stem)
+        chosen, terms = style(style_name), clean_terms(terms)
+        settings = load_settings()
+        if not settings.enabled:
+            raise ValueError("Add an API key in Settings to summarize.")
+        source = paths.timestamps if chosen.timestamps and paths.timestamps.is_file() else paths.text
+        text = source.read_text(encoding="utf-8")
+        if not text.strip():
+            raise ValueError("No speech was found, so there is nothing to summarize.")
+        summary = summarize(
+            text, settings, title=stem, style_name=style_name, language=guess_language(text), terms=terms,
+        )
+        write_text(paths.summary, summary)
+        return {"files": _files(paths)}
+
     # ------------------------------------------------------------ settings
 
     def settings_payload(self) -> dict:
@@ -365,16 +409,25 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"jobs": jobs, "output_dir": str(self.app.output_dir)})
         if url.path == "/api/settings":
             return self._json(self.app.settings_payload())
-        parts = url.path.strip("/").split("/")
-        if len(parts) == 4 and parts[:2] == ["api", "jobs"]:
-            return self._result(parts[2], parts[3], "download" in parse_qs(url.query))
+        if url.path == "/api/results":
+            return self._json({"results": self.app.results()})
+        result = self._result_route(url.path)
+        if result:
+            return self._result_file(*result, download="download" in parse_qs(url.query))
         self._error(404, "Not found.")
 
-    def _result(self, job_id: str, kind: str, download: bool) -> None:
-        job = self.app.jobs.get(job_id)
-        if job is None or job.paths is None or kind not in _RESULT_KINDS:
+    def _result_route(self, path: str) -> Optional[tuple[str, str]]:
+        """(result name, action) for /api/results/<name>/<action>."""
+        parts = path.strip("/").split("/")
+        if len(parts) == 4 and parts[:2] == ["api", "results"]:
+            return unquote(parts[2]), parts[3]
+        return None
+
+    def _result_file(self, stem: str, kind: str, download: bool) -> None:
+        paths = self.app.result_paths(stem)
+        if paths is None or kind not in _RESULT_KINDS:
             return self._error(404, "Not found.")
-        path: Path = getattr(job.paths, kind)
+        path: Path = getattr(paths, kind)
         if not path.is_file():
             return self._error(404, "Not found.")
         content_type = _CONTENT_TYPES.get(path.suffix, "text/plain; charset=utf-8")
@@ -421,6 +474,20 @@ class Handler(BaseHTTPRequestHandler):
             self.app.output_dir.mkdir(parents=True, exist_ok=True)
             open_folder(self.app.output_dir)
             return self._json({"ok": True})
+        result = self._result_route(url.path)
+        if result and result[1] == "summarize":
+            try:
+                data = self._read_json()
+                return self._json(self.app.summarize_result(
+                    result[0], str(data.get("style") or DEFAULT_STYLE), str(data.get("terms") or ""),
+                ))
+            except KeyError:
+                return self._error(404, "Not found.")
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            except Exception as exc:  # the provider: network, key, quota...
+                log.warning("Summary failed: %s", exc)
+                return self._error(502, f"Summary failed: {type(exc).__name__}: {exc}")
         parts = url.path.strip("/").split("/")
         if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "cancel":
             job = self.app.cancel(parts[2])

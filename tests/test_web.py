@@ -1,5 +1,6 @@
 import http.client
 import json
+import os
 import threading
 import time
 from urllib.parse import quote
@@ -133,10 +134,15 @@ def test_upload_transcribe_and_download(server, tmp_path):
         "text": "הרצאה 1.txt", "timestamps": "הרצאה 1_timestamps.txt", "subtitles": "הרצאה 1.srt",
     }
 
-    status, _, body = call(port, "GET", f"/api/jobs/{job['id']}/text", token=app.token)
+    assert job["result"] == "הרצאה 1"
+    base = f"/api/results/{quote(job['result'])}"
+    status, _, body = call(port, "GET", f"{base}/text", token=app.token)
     assert status == 200 and body.decode("utf-8") == "שלום\n"
-    status, headers, _ = call(port, "GET", f"/api/jobs/{job['id']}/timestamps?download=1", token=app.token)
+    status, headers, _ = call(port, "GET", f"{base}/timestamps?download=1", token=app.token)
     assert "attachment" in headers["Content-Disposition"]
+    status, headers, body = call(port, "GET", f"{base}/subtitles", token=app.token)
+    assert headers["Content-Type"].startswith("application/x-subrip")
+    assert body.decode("utf-8") == "1\n00:00:00,000 --> 00:00:02,000\nשלום\n"
     assert (tmp_path / "out" / "הרצאה 1.txt").is_file()
     assert not list(app.upload_dir.iterdir())  # the uploaded copy is deleted afterwards
 
@@ -233,6 +239,57 @@ def test_upload_takes_names_and_terms(server):
     assert status == 201 and app.jobs[job["id"]].terms == "Dr. Cohen, Dijkstra"
     status, data = upload(port, app.token, "talk.mp3", terms="x" * 301)
     assert status == 400 and "limited to 300 characters" in data["error"]
+
+
+def test_past_results_are_listed_newest_first(server, tmp_path):
+    app, port = server
+    out = tmp_path / "out"
+    out.mkdir()
+    for i, stem in enumerate(["old lecture", "שיחה"]):
+        (out / f"{stem}.txt").write_text("text", encoding="utf-8")
+        (out / f"{stem}_timestamps.txt").write_text("[00:00 -> 00:01] text", encoding="utf-8")
+        os.utime(out / f"{stem}.txt", (1_700_000_000 + i, 1_700_000_000 + i))
+    (out / "שיחה_summary.md").write_text("# סיכום", encoding="utf-8")
+    _, _, body = call(port, "GET", "/api/results", token=app.token)
+    results = json.loads(body)["results"]
+    assert [r["name"] for r in results] == ["שיחה", "old lecture"]
+    assert results[0]["files"] == {"text": "שיחה.txt", "timestamps": "שיחה_timestamps.txt", "summary": "שיחה_summary.md"}
+
+
+def test_results_are_served_only_from_the_output_folder(server, tmp_path):
+    app, port = server
+    (tmp_path / "secret.txt").write_text("private", encoding="utf-8")
+    for name in ("missing", "..%2Fsecret", "..%5Csecret", "%2E%2E%2Fsecret"):
+        assert call(port, "GET", f"/api/results/{name}/text", token=app.token)[0] == 404
+    assert call(port, "GET", "/api/results/x/summarize", token=app.token)[0] == 404
+
+
+def test_summarize_a_result_again_in_another_style(server, tmp_path, monkeypatch):
+    app, port = server
+    job = wait_done(port, app.token, upload(port, app.token, "talk.mp3")[1]["id"])
+    seen = {}
+
+    def fake_summary(text, settings, **kwargs):
+        seen.update(text=text, **kwargs)
+        return f"# {kwargs['style_name']}\n"
+
+    monkeypatch.setattr(web, "summarize", fake_summary)
+
+    def again(style, terms=""):
+        body = json.dumps({"style": style, "terms": terms}).encode()
+        status, _, data = call(port, "POST", f"/api/results/{job['result']}/summarize", body, app.token,
+                               headers={"Content-Type": "application/json"})
+        return status, json.loads(data)
+
+    status, data = again("lecture")
+    assert status == 400 and "API key" in data["error"]  # no key yet
+    monkeypatch.setenv("SUMMARY_API_KEY", "test-key")
+    status, data = again("chapters", terms="Dr. Cohen")
+    assert status == 200 and data["files"]["summary"] == "talk_summary.md"
+    assert (tmp_path / "out" / "talk_summary.md").read_text(encoding="utf-8") == "# chapters\n"
+    assert seen["text"] == "[00:00 -> 00:02] שלום\n"  # chapters reads the times
+    assert seen["language"] == "he" and seen["terms"] == "Dr. Cohen" and seen["title"] == "talk"
+    assert again("poem")[0] == 400
 
 
 def test_settings_never_send_the_key_back(server):

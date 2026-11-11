@@ -29,7 +29,7 @@ class Result:
     summary_cancelled: bool = False
 
 
-def _write(path: Path, text: str) -> None:
+def write_text(path: Path, text: str) -> None:
     """UTF-8 with LF line endings on every OS, so results are identical everywhere."""
     path.write_text(text, encoding="utf-8", newline="\n")
 
@@ -109,9 +109,9 @@ def process_file(
     transcript = transcriber.transcribe(media, report, terms=terms)
     if stop is not None and stop.is_set():
         raise Cancelled()
-    _write(paths.text, transcript.text + "\n")
-    _write(paths.timestamps, transcript.timestamped_text() + "\n")
-    _write(paths.subtitles, transcript.srt())
+    write_text(paths.text, transcript.text + "\n")
+    write_text(paths.timestamps, transcript.timestamped_text() + "\n")
+    write_text(paths.subtitles, transcript.srt())
     result = Result(media, paths, transcript.duration)
 
     if settings is None or not settings.enabled:
@@ -129,7 +129,7 @@ def process_file(
 
     try:
         summary = run_summary() if stop is None else _until_stopped(run_summary, stop)
-        _write(paths.summary, summary)
+        write_text(paths.summary, summary)
         result.summarized = True
     except Cancelled:
         result.summary_cancelled = True

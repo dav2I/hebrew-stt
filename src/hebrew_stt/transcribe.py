@@ -46,6 +46,16 @@ def clean_terms(terms: Optional[str]) -> str:
     return text
 
 
+_HEBREW = re.compile(r"[\u05d0-\u05ea]")
+_LATIN = re.compile(r"[A-Za-z]")
+
+
+def guess_language(text: str) -> str:
+    """'he' or 'en', from which letters a transcript uses most."""
+    sample = text[:5000]
+    return "he" if len(_HEBREW.findall(sample)) >= len(_LATIN.findall(sample)) else "en"
+
+
 def language_profile(code: str) -> LanguageProfile:
     if code not in LANGUAGES:
         raise ValueError(f"Unknown language: {code}. Choose one of: {', '.join(LANGUAGES)}.")
@@ -131,7 +141,11 @@ class OutputPaths:
 def output_paths(media: Path, output_dir: Optional[Path] = None) -> OutputPaths:
     """Where the results for `media` go: next to it, unless output_dir is given."""
     folder = Path(output_dir) if output_dir else Path(media).parent
-    stem = safe_stem(Path(media).stem)
+    return result_paths(folder, safe_stem(Path(media).stem))
+
+
+def result_paths(folder: Path, stem: str) -> OutputPaths:
+    """The files of one result, named after its stem."""
     return OutputPaths(
         text=folder / f"{stem}.txt",
         timestamps=folder / f"{stem}_timestamps.txt",

@@ -2,7 +2,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from hebrew_stt.transcribe import LANGUAGES, MAX_TERMS_CHARS, Transcriber, TranscriberPool, clean_terms
+from hebrew_stt.transcribe import (
+    LANGUAGES,
+    MAX_TERMS_CHARS,
+    Transcriber,
+    TranscriberPool,
+    clean_terms,
+    guess_language,
+)
 
 
 class FakeWhisper:
@@ -27,6 +34,12 @@ def test_each_language_has_its_own_model_and_settings():
         assert call["language"] == code
         assert call["condition_on_previous_text"] is (code == "he")
         assert transcript.text == "hello"
+
+
+def test_guess_language_from_the_letters():
+    assert guess_language("שלום לכולם, today") == "he"
+    assert guess_language("Hello everyone, שלום") == "en"
+    assert guess_language("") == "he"
 
 
 def test_unknown_language_is_rejected():

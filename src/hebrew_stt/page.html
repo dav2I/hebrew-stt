@@ -68,7 +68,11 @@
   .tabs button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
   .tabs button.link { margin-left: auto; align-self: center; font-size: 14px; }
   .viewer { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
-  .viewer-tools { display: flex; gap: 6px; justify-content: flex-end; margin-bottom: 8px; }
+  .viewer-tools { display: flex; gap: 6px; justify-content: flex-end; margin-bottom: 8px; flex-wrap: wrap; }
+  .viewer-tools .grow { margin-right: auto; display: flex; gap: 6px; }
+  #history { margin-top: 22px; }
+  #history > summary { cursor: pointer; font-weight: 600; padding: 4px 2px; }
+  #history-list { display: grid; gap: 10px; margin-top: 10px; }
   .viewer pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 440px; overflow: auto;
                 font: 16px/1.75 system-ui, -apple-system, "Segoe UI", Arial, sans-serif; }
   footer { margin-top: 20px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -117,6 +121,11 @@
 
   <div id="jobs"></div>
 
+  <details id="history" hidden>
+    <summary>Previous results <span id="history-count" class="muted"></span></summary>
+    <div id="history-list"></div>
+  </details>
+
   <footer>
     <span class="muted">Results are also saved in <bdi id="out-dir" dir="ltr"></bdi></span>
     <button id="open-folder" type="button">Open folder</button>
@@ -150,10 +159,15 @@
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const EXTENSIONS = [".mp3", ".m4a", ".wav", ".flac", ".ogg", ".opus", ".aac", ".wma",
                     ".mp4", ".mkv", ".webm", ".mov", ".avi"];
-const LABELS = { text: "Transcript", timestamps: "With timestamps", summary: "Summary" };
+const LABELS = { summary: "Summary", text: "Transcript", timestamps: "With timestamps" };
 const FINISHED = ["done", "failed", "cancelled"];
 const $ = (id) => document.getElementById(id);
 const cards = new Map();   // job id -> card
+const allCards = [];       // every card, including past results
+const jobResults = new Set();  // result names that belong to this run's jobs
+let aiEnabled = false;
+let styles = [];
+let historyLoaded = false;
 let uploading = 0;
 let pollTimer = null;
 let summaryChosen = false;
@@ -196,7 +210,7 @@ function fileName(text) {
 
 // ------------------------------------------------------------------ cards
 
-function newCard(name) {
+function newCard(name, parent = $("jobs")) {
   const card = {
     root: el("div", { className: "job" }),
     state: el("span", { className: "job-state", textContent: "Waiting" }),
@@ -204,7 +218,7 @@ function newCard(name) {
     note: el("p", { className: "note", hidden: true }),
     tabs: el("div", { className: "tabs", hidden: true }),
     stop: el("button", { type: "button", className: "stop", textContent: "Stop" }),
-    viewer: null, job: null, open: null, xhr: null,
+    viewer: null, job: null, open: null, xhr: null, result: null, files: {},
   };
   card.stop.addEventListener("click", () => stopJob(card));
   card.root.append(
@@ -214,7 +228,8 @@ function newCard(name) {
     el("div", { className: "track" }, card.fill),
     card.note, card.tabs,
   );
-  $("jobs").append(card.root);
+  parent.append(card.root);
+  allCards.push(card);
   return card;
 }
 
@@ -246,43 +261,56 @@ function render(card, job) {
   card.note.hidden = !(problem || info);
   card.note.textContent = problem || info;
   card.note.classList.toggle("info", !problem);
-  if (job.state === "done" && card.tabs.hidden) {
-    for (const kind of ["summary", "text", "timestamps"]) {
-      if (!job.files[kind]) continue;
-      const button = el("button", { type: "button", textContent: LABELS[kind] });
-      button.setAttribute("aria-pressed", "false");
-      button.addEventListener("click", () => toggleView(card, kind));
-      button.dataset.kind = kind;
-      card.tabs.append(button);
-    }
-    if (job.files.subtitles) {
-      const srt = el("button", { type: "button", className: "link", textContent: "Subtitles (.srt)" });
-      srt.title = "Download subtitles for a video player";
-      srt.addEventListener("click", () => download(`/api/jobs/${job.id}/subtitles`));
-      card.tabs.append(srt);
-    }
-    card.tabs.hidden = false;
-    if (![...cards.values()].some((c) => c.open)) {
-      toggleView(card, job.files.summary ? "summary" : "text");
-    }
-  }
+  if (job.state === "done" && !card.result) showResult(card, job.result, job.files, true);
 }
 
-async function toggleView(card, kind) {
+function resultUrl(card, action) {
+  return `/api/results/${encodeURIComponent(card.result)}/${action}`;
+}
+
+// The tabs of a finished result. Summary is offered whenever AI is set up, to make one.
+function showResult(card, result, files, autoOpen) {
+  card.result = result;
+  card.files = files;
+  card.tabs.replaceChildren();
+  for (const kind of ["summary", "text", "timestamps"]) {
+    if (!files[kind] && !(kind === "summary" && aiEnabled)) continue;
+    const button = el("button", { type: "button", textContent: LABELS[kind] });
+    button.dataset.kind = kind;
+    button.setAttribute("aria-pressed", String(card.open === kind));
+    button.addEventListener("click", () => toggleView(card, kind));
+    card.tabs.append(button);
+  }
+  if (files.subtitles) {
+    const srt = el("button", { type: "button", className: "link", textContent: "Subtitles (.srt)" });
+    srt.title = "Download subtitles for a video player";
+    srt.addEventListener("click", () => download(resultUrl(card, "subtitles")));
+    card.tabs.append(srt);
+  }
+  card.tabs.hidden = false;
+  if (autoOpen && !allCards.some((c) => c.open)) toggleView(card, files.summary ? "summary" : "text");
+}
+
+function toggleView(card, kind) {
   if (card.viewer) card.viewer.remove();
   card.viewer = null;
   const closing = card.open === kind;
   card.open = closing ? null : kind;
-  for (const b of card.tabs.children) b.setAttribute("aria-pressed", String(b.dataset.kind === card.open));
+  for (const b of card.tabs.querySelectorAll("button[data-kind]")) {
+    b.setAttribute("aria-pressed", String(b.dataset.kind === card.open));
+  }
   if (closing) return;
-
-  const url = `/api/jobs/${card.job.id}/${kind}`;
-  const pre = el("pre", { dir: "auto", textContent: "Loading..." });
-  const copy = el("button", { type: "button", textContent: "Copy" });
-  const save = el("button", { type: "button", textContent: "Download" });
-  card.viewer = el("div", { className: "viewer" }, el("div", { className: "viewer-tools" }, copy, save), pre);
+  const tools = el("div", { className: "viewer-tools" });
+  const body = el("div");
+  card.viewer = el("div", { className: "viewer" }, tools, body);
   card.root.append(card.viewer);
+  if (kind === "summary") showSummary(card, tools, body);
+  else showText(card, kind, tools, body);
+}
 
+async function loadText(url, body, tools) {
+  const pre = el("pre", { dir: "auto", textContent: "Loading..." });
+  body.replaceChildren(pre);
   try {
     const response = await fetch(url, { headers: { "X-Token": TOKEN } });
     if (!response.ok) throw new Error(response.statusText);
@@ -290,13 +318,60 @@ async function toggleView(card, kind) {
     pre.textContent = text.trim() ? text : "No speech was found in this file.";
   } catch (error) {
     pre.textContent = `Could not load the file: ${error.message}`;
+    return;
   }
+  const copy = el("button", { type: "button", textContent: "Copy" });
   copy.addEventListener("click", async () => {
     await navigator.clipboard.writeText(pre.textContent);
     copy.textContent = "Copied";
     setTimeout(() => (copy.textContent = "Copy"), 1500);
   });
+  const save = el("button", { type: "button", textContent: "Download" });
   save.addEventListener("click", () => download(url));
+  tools.append(copy, save);
+}
+
+function showText(card, kind, tools, body) {
+  loadText(resultUrl(card, kind), body, tools);
+}
+
+function showSummary(card, tools, body) {
+  if (aiEnabled) {
+    const select = el("select");
+    select.setAttribute("aria-label", "Summary style");
+    fillSelect(select, styles, card.style || $("style").value, styles[0] && styles[0].id);
+    const again = el("button", { type: "button", textContent: card.files.summary ? "Summarize again" : "Summarize" });
+    again.addEventListener("click", () => summarizeAgain(card, select, again, body));
+    tools.append(el("span", { className: "grow" }, select, again));
+  }
+  if (card.files.summary) {
+    loadText(resultUrl(card, "summary"), body, tools);
+  } else {
+    body.append(el("p", {
+      className: "muted",
+      textContent: aiEnabled ? "No summary yet. Pick a style and click Summarize." : "Add an API key in Settings to summarize.",
+    }));
+  }
+}
+
+async function summarizeAgain(card, select, button, body) {
+  button.disabled = select.disabled = true;
+  button.textContent = "Summarizing...";
+  card.style = select.value;
+  try {
+    const data = await api(resultUrl(card, "summarize"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ style: select.value, terms: $("terms").value.trim() }),
+    });
+    card.open = null;
+    showResult(card, card.result, data.files, false);
+    toggleView(card, "summary");
+  } catch (error) {
+    body.replaceChildren(el("p", { className: "note", textContent: error.message }));
+    button.disabled = select.disabled = false;
+    button.textContent = "Try again";
+  }
 }
 
 function download(url) {
@@ -317,6 +392,27 @@ async function stopJob(card) {
   } catch (_) {
     card.stop.disabled = false;
   }
+}
+
+// --------------------------------------------------------- past results
+
+function when(epochSeconds) {
+  return new Date(epochSeconds * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+async function loadHistory() {
+  const data = await api("/api/results");
+  const past = data.results.filter((r) => !jobResults.has(r.id));
+  const list = $("history-list");
+  list.replaceChildren();
+  for (const r of past) {
+    const card = newCard(r.name, list);
+    card.root.classList.add("finished");
+    setState(card, when(r.modified));
+    showResult(card, r.id, r.files, false);
+  }
+  $("history-count").textContent = `(${past.length})`;
+  $("history").hidden = !past.length;
 }
 
 // ---------------------------------------------------------------- uploads
@@ -390,8 +486,13 @@ async function refresh() {
   $("offline").hidden = true;
   $("out-dir").textContent = data.output_dir;
   for (const job of data.jobs) {
+    jobResults.add(job.result);
     if (!cards.has(job.id)) cards.set(job.id, newCard(job.name));
     render(cards.get(job.id), job);
+  }
+  if (!historyLoaded) {
+    historyLoaded = true;
+    loadHistory().catch(() => { historyLoaded = false; });
   }
   return data.jobs.some((job) => !FINISHED.includes(job.state));
 }
@@ -414,7 +515,12 @@ function showSummaryOption(s) {
   const box = $("summary");
   const hint = $("summary-hint");
   const select = $("style");
+  styles = s.styles;
   fillSelect(select, s.styles, prefs.style, s.default_style);
+  if (aiEnabled !== s.enabled) {
+    aiEnabled = s.enabled;
+    for (const card of allCards) if (card.result) showResult(card, card.result, card.files, false);
+  }
   hint.textContent = "";
   box.disabled = !s.enabled;
   if (!s.enabled) {
