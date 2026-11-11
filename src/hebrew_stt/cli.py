@@ -132,6 +132,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         log.info("  Duration %s. Saved:", format_timestamp(result.duration))
         log.info("    %s", result.paths.text)
         log.info("    %s", result.paths.timestamps)
+        log.info("    %s", result.paths.subtitles)
         if result.summarized:
             log.info("    %s", result.paths.summary)
         elif result.summary_error:

@@ -111,6 +111,7 @@ def process_file(
         raise Cancelled()
     _write(paths.text, transcript.text + "\n")
     _write(paths.timestamps, transcript.timestamped_text() + "\n")
+    _write(paths.subtitles, transcript.srt())
     result = Result(media, paths, transcript.duration)
 
     if settings is None or not settings.enabled:

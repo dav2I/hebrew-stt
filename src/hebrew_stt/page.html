@@ -66,6 +66,7 @@
   .note.info { color: var(--muted); }
   .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
   .tabs button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
+  .tabs button.link { margin-left: auto; align-self: center; font-size: 14px; }
   .viewer { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
   .viewer-tools { display: flex; gap: 6px; justify-content: flex-end; margin-bottom: 8px; }
   .viewer pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 440px; overflow: auto;
@@ -254,6 +255,12 @@ function render(card, job) {
       button.dataset.kind = kind;
       card.tabs.append(button);
     }
+    if (job.files.subtitles) {
+      const srt = el("button", { type: "button", className: "link", textContent: "Subtitles (.srt)" });
+      srt.title = "Download subtitles for a video player";
+      srt.addEventListener("click", () => download(`/api/jobs/${job.id}/subtitles`));
+      card.tabs.append(srt);
+    }
     card.tabs.hidden = false;
     if (![...cards.values()].some((c) => c.open)) {
       toggleView(card, job.files.summary ? "summary" : "text");
@@ -289,12 +296,14 @@ async function toggleView(card, kind) {
     copy.textContent = "Copied";
     setTimeout(() => (copy.textContent = "Copy"), 1500);
   });
-  save.addEventListener("click", () => {
-    const a = el("a", { href: `${url}?download=1&t=${encodeURIComponent(TOKEN)}` });
-    document.body.append(a);
-    a.click();
-    a.remove();
-  });
+  save.addEventListener("click", () => download(url));
+}
+
+function download(url) {
+  const a = el("a", { href: `${url}?download=1&t=${encodeURIComponent(TOKEN)}` });
+  document.body.append(a);
+  a.click();
+  a.remove();
 }
 
 async function stopJob(card) {

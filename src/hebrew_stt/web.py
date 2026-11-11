@@ -54,7 +54,8 @@ log = logging.getLogger(__name__)
 _CHUNK = 1 << 20
 # A fixed address lets the page remember your choices between runs; another free port is used if taken.
 PREFERRED_PORT = 47820
-_RESULT_KINDS = ("text", "timestamps", "summary")
+_RESULT_KINDS = ("text", "timestamps", "subtitles", "summary")
+_CONTENT_TYPES = {".md": "text/markdown; charset=utf-8", ".srt": "application/x-subrip; charset=utf-8"}
 _FINISHED = ("done", "failed", "cancelled")
 _CSP = (
     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
@@ -376,7 +377,7 @@ class Handler(BaseHTTPRequestHandler):
         path: Path = getattr(job.paths, kind)
         if not path.is_file():
             return self._error(404, "Not found.")
-        content_type = "text/markdown; charset=utf-8" if path.suffix == ".md" else "text/plain; charset=utf-8"
+        content_type = _CONTENT_TYPES.get(path.suffix, "text/plain; charset=utf-8")
         extra = {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(path.name)}"} if download else None
         self._send(200, path.read_bytes(), content_type, extra)
 

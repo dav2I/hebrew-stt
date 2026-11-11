@@ -84,6 +84,24 @@ def format_timestamp(seconds: float, with_hours: bool = False) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+def srt_time(seconds: float) -> str:
+    """SubRip time: HH:MM:SS,mmm."""
+    ms = max(0, round(seconds * 1000))
+    hours, ms = divmod(ms, 3_600_000)
+    minutes, ms = divmod(ms, 60_000)
+    secs, ms = divmod(ms, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{ms:03d}"
+
+
+_SRT_TIMES = re.compile(
+    r"(\d+):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d+):(\d{2}):(\d{2})[,.](\d{3})"
+)
+
+
+def _srt_seconds(h: str, m: str, s: str, ms: str) -> float:
+    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+
+
 _INVALID_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
     f"{prefix}{i}" for prefix in ("COM", "LPT") for i in range(1, 10)
@@ -106,6 +124,7 @@ def safe_stem(name: str, max_length: int = 150) -> str:
 class OutputPaths:
     text: Path
     timestamps: Path
+    subtitles: Path
     summary: Path
 
 
@@ -116,6 +135,7 @@ def output_paths(media: Path, output_dir: Optional[Path] = None) -> OutputPaths:
     return OutputPaths(
         text=folder / f"{stem}.txt",
         timestamps=folder / f"{stem}_timestamps.txt",
+        subtitles=folder / f"{stem}.srt",
         summary=folder / f"{stem}_summary.md",
     )
 
@@ -143,6 +163,29 @@ class Transcript:
             f"{format_timestamp(s.end, with_hours)}] {s.text}"
             for s in self.segments
         )
+
+    def srt(self) -> str:
+        """SubRip subtitles: one cue per segment."""
+        return "\n".join(
+            f"{i}\n{srt_time(s.start)} --> {srt_time(max(s.start, s.end))}\n{s.text}\n"
+            for i, s in enumerate(self.segments, start=1)
+        )
+
+
+def parse_srt(text: str) -> list[Segment]:
+    """Read SubRip subtitles back into segments (a cue's lines are joined with spaces)."""
+    segments = []
+    for block in re.split(r"\n\s*\n", text.replace("\r\n", "\n").strip()):
+        lines = block.split("\n")
+        for i, line in enumerate(lines):
+            match = _SRT_TIMES.search(line)
+            if match:
+                words = " ".join(part.strip() for part in lines[i + 1:] if part.strip())
+                if words:
+                    g = match.groups()
+                    segments.append(Segment(_srt_seconds(*g[:4]), _srt_seconds(*g[4:]), words))
+                break
+    return segments
 
 
 # ------------------------------------------------------------------ hardware

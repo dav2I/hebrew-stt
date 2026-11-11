@@ -129,7 +129,9 @@ def test_upload_transcribe_and_download(server, tmp_path):
     assert status == 201
     job = wait_done(port, app.token, job["id"])
     assert job["state"] == "done"
-    assert job["files"] == {"text": "הרצאה 1.txt", "timestamps": "הרצאה 1_timestamps.txt"}
+    assert job["files"] == {
+        "text": "הרצאה 1.txt", "timestamps": "הרצאה 1_timestamps.txt", "subtitles": "הרצאה 1.srt",
+    }
 
     status, _, body = call(port, "GET", f"/api/jobs/{job['id']}/text", token=app.token)
     assert status == 200 and body.decode("utf-8") == "שלום\n"
@@ -168,7 +170,7 @@ def test_stop_a_running_and_a_queued_file(server, tmp_path):
     slow.release.set()
     again = wait_done(port, app.token, upload(port, app.token, "long.mp3")[1]["id"])
     assert again["files"]["text"] == "long.txt"
-    assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["long.txt", "long_timestamps.txt"]
+    assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["long.srt", "long.txt", "long_timestamps.txt"]
     for job in (running, queued):
         assert wait_done(port, app.token, job["id"])["state"] == "cancelled"
 
@@ -192,7 +194,7 @@ def test_skip_summary_keeps_the_transcript(server, monkeypatch):
     finally:
         release.set()
     assert job["state"] == "done" and job["summary_cancelled"]
-    assert job["files"] == {"text": "talk.txt", "timestamps": "talk_timestamps.txt"}
+    assert job["files"] == {"text": "talk.txt", "timestamps": "talk_timestamps.txt", "subtitles": "talk.srt"}
 
 
 def test_stop_leaves_finished_and_unknown_files_alone(server):
