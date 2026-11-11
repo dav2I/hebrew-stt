@@ -10,7 +10,7 @@ from typing import Optional, Sequence
 
 from . import __version__
 from .core import collect_media, process_file
-from .summarize import load_settings
+from .summarize import DEFAULT_STYLE, STYLES, load_settings
 from .transcribe import DEFAULT_MODEL, MEDIA_EXTENSIONS, Transcriber, format_timestamp
 
 log = logging.getLogger("hebrew_stt")
@@ -49,6 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("files", nargs="*", help="audio or video files, or folders that contain them")
     parser.add_argument("--no-summary", action="store_true", help="only transcribe, even if an API key is set")
+    parser.add_argument(
+        "--style", choices=list(STYLES), default=DEFAULT_STYLE, metavar="STYLE",
+        help="summary style: " + ", ".join(f"{key} ({s.label})" for key, s in STYLES.items())
+        + f". Default: {DEFAULT_STYLE}",
+    )
     parser.add_argument(
         "-o", "--output-dir", type=Path,
         help="where to save results (default: next to each file; in the browser: Documents/hebrew-stt)",
@@ -98,7 +103,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         log.info("[%d/%d] %s", i, len(media), path.name)
         bar = _ProgressBar()
         try:
-            result = process_file(path, transcriber, settings, args.output_dir, progress=bar, on_status=log.info)
+            result = process_file(
+                path, transcriber, settings, args.output_dir, progress=bar, on_status=log.info,
+                style_name=args.style,
+            )
         except Exception as exc:
             bar.finish()
             log.error("  Failed: %s", exc)

@@ -39,6 +39,9 @@
   .options { display: flex; align-items: center; gap: 8px 14px; margin: 14px 2px; flex-wrap: wrap; }
   .options label { display: flex; gap: 8px; align-items: center; }
   .options input:disabled + span { color: var(--muted); }
+  select { font: inherit; font-size: 14px; padding: 4px 8px; border-radius: 8px;
+           border: 1px solid var(--border); background: var(--card); color: var(--text); }
+  select:disabled { color: var(--muted); }
   #offline { background: var(--bad); color: #fff; border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; }
   #jobs { display: grid; gap: 10px; }
   .job { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
@@ -95,6 +98,7 @@
 
   <div class="options">
     <label><input id="summary" type="checkbox" disabled> <span>Summarize with AI</span></label>
+    <select id="style" aria-label="Summary style" disabled></select>
     <span id="summary-hint" class="muted"></span>
   </div>
 
@@ -140,6 +144,15 @@ const cards = new Map();   // job id -> card
 let uploading = 0;
 let pollTimer = null;
 let summaryChosen = false;
+
+// Choices on this page are remembered in this browser (the address stays the same between runs).
+const prefs = (() => {
+  try { return JSON.parse(localStorage.getItem("hebrew-stt") || "{}") || {}; } catch (_) { return {}; }
+})();
+function savePref(key, value) {
+  prefs[key] = value;
+  try { localStorage.setItem("hebrew-stt", JSON.stringify(prefs)); } catch (_) {}
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { "X-Token": TOKEN, ...(options.headers || {}) } });
@@ -295,9 +308,13 @@ function upload(file) {
     card.root.classList.add("finished");
     return;
   }
-  const summary = $("summary").checked ? "1" : "0";
+  const params = new URLSearchParams({
+    name: file.name,
+    summary: $("summary").checked ? "1" : "0",
+    style: $("style").value,
+  });
   const xhr = new XMLHttpRequest();
-  xhr.open("PUT", `/api/upload?name=${encodeURIComponent(file.name)}&summary=${summary}`);
+  xhr.open("PUT", `/api/upload?${params}`);
   xhr.setRequestHeader("X-Token", TOKEN);
   xhr.upload.onprogress = (e) => {
     if (e.lengthComputable) setState(card, `Uploading ${Math.round((e.loaded / e.total) * 100)}%`, "", e.loaded / e.total);
@@ -373,6 +390,11 @@ async function poll() {
 function showSummaryOption(s) {
   const box = $("summary");
   const hint = $("summary-hint");
+  const select = $("style");
+  if (!select.options.length) {
+    for (const st of s.styles) select.append(el("option", { value: st.id, textContent: st.label }));
+    select.value = s.styles.some((st) => st.id === prefs.style) ? prefs.style : s.default_style;
+  }
   hint.textContent = "";
   box.disabled = !s.enabled;
   if (!s.enabled) {
@@ -381,9 +403,10 @@ function showSummaryOption(s) {
     add.addEventListener("click", openSettings);
     hint.append(add, " to get a summary too.");
   } else {
-    if (!summaryChosen) box.checked = true;
+    if (!summaryChosen) box.checked = prefs.summary !== false;
     hint.textContent = `${s.model} · sends the transcript text to ${s.host}`;
   }
+  select.disabled = !box.checked;
 }
 
 async function loadSettings() {
@@ -434,7 +457,12 @@ $("settings-form").addEventListener("submit", (e) => {
 $("remove-key").addEventListener("click", () => {
   if (confirm("Remove the saved API key from this computer?")) saveSettings("");
 });
-$("summary").addEventListener("change", () => { summaryChosen = true; });
+$("summary").addEventListener("change", (e) => {
+  summaryChosen = true;
+  savePref("summary", e.target.checked);
+  $("style").disabled = !e.target.checked;
+});
+$("style").addEventListener("change", (e) => savePref("style", e.target.value));
 $("open-folder").addEventListener("click", () => api("/api/open-folder", { method: "POST" }).catch(() => {}));
 
 loadSettings().catch(() => { $("offline").hidden = false; });

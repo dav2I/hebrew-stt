@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional, TypeVar
 
-from .summarize import SummarySettings, summarize
+from .summarize import DEFAULT_STYLE, SummarySettings, style, summarize
 from .transcribe import MEDIA_EXTENSIONS, OutputPaths, ProgressCallback, Transcriber, output_paths
 
 log = logging.getLogger(__name__)
@@ -84,12 +84,15 @@ def process_file(
     progress: Optional[ProgressCallback] = None,
     on_status: Optional[Callable[[str], None]] = None,
     stop: Optional[threading.Event] = None,
+    style_name: str = DEFAULT_STYLE,
+    language: str = "he",
 ) -> Result:
     """Transcribe one file and write the results. A failed summary does not fail the file.
 
     Setting `stop` during transcription raises Cancelled and writes nothing. Setting it
     during the summary keeps the transcript and drops the summary.
     """
+    summary_style = style(style_name)  # an unknown style fails before the long transcription
     media = Path(media)
     paths = output_paths(media, Path(output_dir) if output_dir else None)
 
@@ -117,7 +120,8 @@ def process_file(
     if on_status:
         on_status(f"Summarizing with {settings.model}...")
     def run_summary() -> str:
-        return summarize(transcript.text, settings, title=media.stem)
+        source = transcript.timestamped_text() if summary_style.timestamps else transcript.text
+        return summarize(source, settings, title=media.stem, style_name=style_name, language=language)
 
     try:
         summary = run_summary() if stop is None else _until_stopped(run_summary, stop)

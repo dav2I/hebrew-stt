@@ -57,8 +57,9 @@ def call(port, method, path, body=None, token=None, host=None, headers=None):
     return response.status, response.headers, data
 
 
-def upload(port, token, name, body=b"fake audio", summary=False):
-    path = f"/api/upload?name={quote(name)}&summary={int(summary)}"
+def upload(port, token, name, body=b"fake audio", summary=False, **params):
+    extra = "".join(f"&{key}={quote(value)}" for key, value in params.items())
+    path = f"/api/upload?name={quote(name)}&summary={int(summary)}{extra}"
     status, _, data = call(port, "PUT", path, body, token)
     return status, json.loads(data)
 
@@ -187,6 +188,17 @@ def test_stop_leaves_finished_and_unknown_files_alone(server):
     job = wait_done(port, app.token, upload(port, app.token, "talk.wav")[1]["id"])
     assert cancel(port, app.token, job["id"]) == (200, job)
     assert call(port, "POST", "/api/jobs/nope/cancel", b"", app.token)[0] == 404
+
+
+def test_upload_takes_a_summary_style(server):
+    app, port = server
+    status, job = upload(port, app.token, "talk.mp3", style="lecture")
+    assert status == 201 and app.jobs[job["id"]].style == "lecture"
+    status, data = upload(port, app.token, "talk.mp3", style="poem")
+    assert status == 400 and data["error"].startswith("Unknown summary style: poem.")
+    _, _, body = call(port, "GET", "/api/settings", token=app.token)
+    styles = json.loads(body)["styles"]
+    assert styles[0] == {"id": "general", "label": "General"} and len(styles) > 5
 
 
 def test_settings_never_send_the_key_back(server):

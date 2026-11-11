@@ -27,12 +27,23 @@ from typing import BinaryIO, Optional
 from urllib.parse import parse_qs, quote, urlparse
 
 from .core import Cancelled, process_file
-from .summarize import SummarySettings, load_settings, read_saved_settings, save_settings, settings_file
+from .summarize import (
+    DEFAULT_STYLE,
+    STYLES,
+    SummarySettings,
+    load_settings,
+    read_saved_settings,
+    save_settings,
+    settings_file,
+    style,
+)
 from .transcribe import MEDIA_EXTENSIONS, OutputPaths, Transcriber, safe_stem
 
 log = logging.getLogger(__name__)
 
 _CHUNK = 1 << 20
+# A fixed address lets the page remember your choices between runs; another free port is used if taken.
+PREFERRED_PORT = 47820
 _RESULT_KINDS = ("text", "timestamps", "summary")
 _FINISHED = ("done", "failed", "cancelled")
 _CSP = (
@@ -67,6 +78,7 @@ class Job:
     name: str
     media: Path
     summarize: bool
+    style: str = DEFAULT_STYLE
     state: str = "queued"  # queued, loading, transcribing, summarizing, done, failed, cancelled
     progress: float = 0.0
     position: float = 0.0
@@ -130,11 +142,14 @@ class WebApp:
             self._reserved.discard(job.media.stem.lower())
             job.holds_name = False
 
-    def add_upload(self, name: str, stream: BinaryIO, length: int, summarize: bool) -> Job:
+    def add_upload(
+        self, name: str, stream: BinaryIO, length: int, summarize: bool, style_name: str = DEFAULT_STYLE,
+    ) -> Job:
         suffix = Path(name).suffix.lower()
         if suffix not in MEDIA_EXTENSIONS:
             # No name in the message: the page shows it on the file's card, which already has the name.
             raise ValueError("Not an audio or video file.")
+        style(style_name)  # raises ValueError for an unknown style
         with self._lock:
             stem = self._reserve_stem(name)
         job_id = uuid.uuid4().hex[:12]
@@ -155,7 +170,7 @@ class WebApp:
             with self._lock:
                 self._reserved.discard(stem.lower())
             raise
-        job = Job(job_id, name, media, summarize)
+        job = Job(job_id, name, media, summarize, style_name)
         with self._lock:
             self.jobs[job_id] = job
         self._queue.put(job)
@@ -212,7 +227,10 @@ class WebApp:
         def status(_text: str) -> None:
             self._set_state(job, "summarizing")
 
-        result = process_file(job.media, self.transcriber, settings, self.output_dir, progress, status, job.stop)
+        result = process_file(
+            job.media, self.transcriber, settings, self.output_dir, progress, status, job.stop,
+            style_name=job.style,
+        )
         with self._lock:
             job.paths = result.paths
             job.duration = result.duration
@@ -238,6 +256,8 @@ class WebApp:
             },
             "external": effective != saved,
             "path": str(settings_file()),
+            "styles": [{"id": key, "label": s.label} for key, s in STYLES.items()],
+            "default_style": DEFAULT_STYLE,
         }
 
     def update_settings(self, data: dict) -> dict:
@@ -352,7 +372,11 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._error(411, "Missing Content-Length.")
         try:
-            job = self.app.add_upload(name, self.rfile, length, query.get("summary", ["0"])[0] == "1")
+            job = self.app.add_upload(
+                name, self.rfile, length,
+                summarize=query.get("summary", ["0"])[0] == "1",
+                style_name=query.get("style", [DEFAULT_STYLE])[0],
+            )
         except ValueError as exc:
             return self._error(400, str(exc))
         except (ConnectionError, OSError) as exc:
@@ -380,9 +404,15 @@ class Handler(BaseHTTPRequestHandler):
         self._error(404, "Not found.")
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+    # On Windows SO_REUSEADDR would let a second program bind the same port. Fail instead.
+    allow_reuse_address = sys.platform != "win32"
+
+
 def make_server(app: WebApp, port: int = 0) -> ThreadingHTTPServer:
     Handler.page = resources.files("hebrew_stt").joinpath("page.html").read_bytes()
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = _Server(("127.0.0.1", port), Handler)
     server.app = app  # type: ignore[attr-defined]
     return server
 
@@ -394,7 +424,10 @@ def serve(
     open_browser: bool = True,
 ) -> int:
     app = WebApp(Transcriber(model=model, device=device), Path(output_dir) if output_dir else default_output_dir())
-    server = make_server(app)
+    try:
+        server = make_server(app, PREFERRED_PORT)
+    except OSError:
+        server = make_server(app)
     url = f"http://127.0.0.1:{server.server_address[1]}/?t={app.token}"
     print(
         f"\nhebrew-stt is running at:\n  {url}\n\n"

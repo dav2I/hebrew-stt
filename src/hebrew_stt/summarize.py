@@ -188,25 +188,99 @@ def split_text(text: str, max_chars: int = CHUNK_CHARS) -> list[str]:
 
 # ------------------------------------------------------------------- prompts
 
-SYSTEM_PROMPT = """אתה מומחה לניתוח וסיכום של הקלטות אודיו ווידאו.
+BASE_PROMPT = """אתה מסכם הקלטות אודיו ווידאו מתומללות.
+התמלול נעשה אוטומטית ויכולות להיות בו שגיאות זיהוי; כשמילה נראית שגויה, הבן אותה מההקשר.
+כתוב בפורמט Markdown, בשפה ברורה. אל תוסיף מידע שלא מופיע בהקלטה.
+{language}"""
 
-שלב 1 - זהה את סוג התוכן: הרצאה או שיעור, פגישת עבודה, פודקאסט או ראיון, \
-הדרכה או וובינר, הקלטה אישית, או דיון מקצועי.
+# The summary is written in the language of the recording.
+WRITE_IN = {
+    "he": "כתוב את התשובה בעברית.",
+    "en": "Write the answer in English.",
+}
 
-שלב 2 - כתוב סיכום שמותאם לסוג התוכן:
+
+@dataclass(frozen=True)
+class SummaryStyle:
+    label: str  # shown on the page and in the command line help
+    headings: tuple[str, str]  # first line of the summary file, in Hebrew and in English
+    instructions: str
+    timestamps: bool = False  # the model reads the transcript with times
+
+
+STYLES: dict[str, SummaryStyle] = {
+    "general": SummaryStyle("General", ("סיכום", "Summary"), """\
+זהה קודם את סוג התוכן וציין אותו בראש הסיכום: הרצאה או שיעור, פגישת עבודה, שיחה, \
+פודקאסט או ראיון, הדרכה או וובינר, הקלטה אישית, או דיון מקצועי.
+אחר כך כתוב סיכום שמותאם לסוג התוכן:
 - הרצאה או שיעור: תמצית, מושגי מפתח והגדרות, הנושאים לפי הסדר, דגשים חשובים.
 - פגישת עבודה: מטרה, נושאים שנדונו, החלטות, משימות (עם אחראים ומועדים אם צוינו), שאלות פתוחות.
+- שיחה: מטרת השיחה, עיקרי הדברים, מה סוכם, צעדים הבאים.
 - פודקאסט או ראיון: המסר המרכזי, תובנות מפתח, רעיונות בולטים, מסקנות.
 - הדרכה או וובינר: מה נלמד, שלבים מעשיים, המלצות וטעויות נפוצות.
-- הקלטה אישית או אחר: תמצית, עיקרי הדברים, צעדים הבאים.
-
-כתוב בעברית ברורה, בפורמט Markdown. בראש הסיכום ציין את סוג התוכן שזיהית. \
-אל תוסיף מידע שלא מופיע בהקלטה."""
+- הקלטה אישית או אחר: תמצית, עיקרי הדברים, צעדים הבאים."""),
+    "short": SummaryStyle("Very short", ("סיכום קצר", "Short summary"), """\
+כתוב סיכום קצר מאוד: משפט אחד שאומר במה מדובר, ואחריו 3 עד 5 נקודות עם הדברים החשובים ביותר.
+בלי כותרות משנה ובלי פרטים שוליים. לכל היותר 120 מילים."""),
+    "detailed": SummaryStyle("Detailed", ("סיכום מפורט", "Detailed summary"), """\
+כתוב סיכום מלא ומפורט לפי סדר ההקלטה, מחולק לסעיפים עם כותרת לכל נושא.
+בכל סעיף פרט את הטענות, ההסברים, הדוגמאות, המספרים והשמות שהוזכרו.
+המטרה: מי שלא שמע את ההקלטה יבין ממנו כמעט את כל מה שנאמר."""),
+    "lecture": SummaryStyle("Lecture notes", ("סיכום שיעור", "Lecture notes"), """\
+כתוב סיכום שיעור ללמידה ולמבחן:
+- תמצית השיעור בשניים או שלושה משפטים.
+- מושגי מפתח והגדרות.
+- הנושאים לפי סדר השיעור, עם ההסברים והדוגמאות שניתנו.
+- נוסחאות, שלבים או אלגוריתמים, אם הוצגו.
+- מה שהמרצה הדגיש, חזר עליו או אמר שיופיע במבחן או בעבודה.
+- מטלות, תאריכים והודעות, אם נאמרו."""),
+    "meeting": SummaryStyle("Meeting", ("סיכום פגישה", "Meeting summary"), """\
+כתוב סיכום פגישה:
+- מטרת הפגישה ומי השתתף, אם אפשר להבין.
+- הנושאים שנדונו, בקצרה.
+- החלטות שהתקבלו.
+- משימות: מה צריך לעשות, מי אחראי ועד מתי, אם צוין.
+- שאלות פתוחות ונושאים להמשך."""),
+    "call": SummaryStyle("Phone call", ("סיכום שיחה", "Call summary"), """\
+כתוב סיכום של שיחת טלפון:
+- מי דיבר עם מי ומה מטרת השיחה, אם אפשר להבין.
+- עיקרי הדברים שכל צד אמר.
+- מה סוכם, ומה כל צד צריך לעשות בהמשך.
+- פרטים שנאמרו: תאריכים, שעות, סכומים, מספרים, כתובות ושמות. העתק אותם בדיוק כפי שנאמרו."""),
+    "interview": SummaryStyle("Interview / podcast", ("סיכום ראיון", "Interview summary"), """\
+כתוב סיכום של ראיון או פודקאסט:
+- מי המשתתפים ועל מה השיחה.
+- הרעיונות והתובנות המרכזיים, כל אחד בכמה משפטים.
+- ציטוטים בולטים, מילה במילה מהתמלול.
+- מסקנות והמלצות שעלו."""),
+    "chapters": SummaryStyle("Chapters with times", ("פרקים", "Chapters"), """\
+חלק את ההקלטה לפרקים לפי הנושאים, בין 4 ל-15 פרקים לפי האורך.
+לכל פרק כתוב שורת כותרת בפורמט `MM:SS` - כותרת הפרק (או `HH:MM:SS` בהקלטה ארוכה משעה), \
+כאשר הזמן הוא זמן תחילת הפרק מתוך הזמנים שבתמלול. מתחת לכל כותרת כתוב משפט או שניים \
+על מה שנאמר בפרק.""", timestamps=True),
+    "quiz": SummaryStyle("Study questions", ("שאלות לתרגול", "Study questions"), """\
+כתוב 8 עד 15 שאלות לחזרה ולתרגול על החומר שבהקלטה, מהקלות לקשות.
+אחרי כל שאלה כתוב את התשובה הנכונה בקצרה, כפי שהיא עולה מההקלטה.
+שלב שאלות הבנה ולא רק שאלות זיכרון."""),
+}
+DEFAULT_STYLE = "general"
 
 PART_PROMPT = """אתה מקבל חלק אחד מתוך תמלול ארוך של הקלטה.
-כתוב בעברית סיכום ביניים מפורט של החלק הזה: הנושאים, הטיעונים, המושגים, \
-ההחלטות והפרטים החשובים, לפי סדר הופעתם. אל תוסיף מידע שלא מופיע בתמלול. \
-סיכום הביניים ישמש לבניית סיכום כולל של כל ההקלטה."""
+כתוב סיכום ביניים מפורט של החלק הזה: הנושאים, הטיעונים, המושגים, ההחלטות והפרטים \
+החשובים, לפי סדר הופעתם. אם בתמלול יש זמנים, ציין ליד כל נושא את זמן תחילתו. \
+אל תוסיף מידע שלא מופיע בתמלול. סיכום הביניים ישמש לבניית סיכום כולל של כל ההקלטה.
+{language}"""
+
+
+def style(name: str) -> SummaryStyle:
+    if name not in STYLES:
+        raise ValueError(f"Unknown summary style: {name}. Choose one of: {', '.join(STYLES)}.")
+    return STYLES[name]
+
+
+def _system_prompt(style_name: str, language: str) -> str:
+    base = BASE_PROMPT.format(language=WRITE_IN.get(language, WRITE_IN["he"]))
+    return f"{base}\n\n{style(style_name).instructions}"
 
 
 # ----------------------------------------------------------------- summarize
@@ -231,8 +305,15 @@ def summarize(
     title: Optional[str] = None,
     client=None,
     max_chars: int = CHUNK_CHARS,
+    style_name: str = DEFAULT_STYLE,
+    language: str = "he",
 ) -> str:
-    """Summarize a transcript. Long transcripts are summarized in parts, then merged."""
+    """Summarize a transcript in the given style and language.
+
+    For styles that need times (chapters), pass the transcript with timestamps.
+    Long transcripts are summarized in parts, then merged.
+    """
+    chosen = style(style_name)
     if not settings.enabled:
         raise ValueError("No API key is configured for the summary.")
     chunks = split_text(text, max_chars)
@@ -246,14 +327,16 @@ def summarize(
     if len(chunks) == 1:
         intro, material = "להלן תמלול ההקלטה", chunks[0]
     else:
+        part_prompt = PART_PROMPT.format(language=WRITE_IN.get(language, WRITE_IN["he"]))
         notes = []
         for i, chunk in enumerate(chunks, start=1):
             log.info("Summarizing part %d of %d...", i, len(chunks))
-            notes.append(_chat(client, settings.model, PART_PROMPT, f"חלק {i} מתוך {len(chunks)}:\n\n{chunk}"))
+            notes.append(_chat(client, settings.model, part_prompt, f"חלק {i} מתוך {len(chunks)}:\n\n{chunk}"))
         intro = "להלן סיכומי ביניים של חלקי ההקלטה, לפי הסדר"
         material = "\n\n".join(f"## חלק {i}\n{note}" for i, note in enumerate(notes, start=1))
 
     named = f" ({title})" if title else ""
-    body = _chat(client, settings.model, SYSTEM_PROMPT, f"{intro}{named}:\n\n{material}")
-    header = f"# סיכום: {title}\n\n" if title else ""
+    body = _chat(client, settings.model, _system_prompt(style_name, language), f"{intro}{named}:\n\n{material}")
+    heading = chosen.headings[1 if language == "en" else 0]
+    header = f"# {heading}: {title}\n\n" if title else ""
     return f"{header}{body}\n"

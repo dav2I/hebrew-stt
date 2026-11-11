@@ -8,6 +8,7 @@ from hebrew_stt.cli import main
 from hebrew_stt.summarize import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
+    STYLES,
     SummarySettings,
     load_settings,
     read_saved_settings,
@@ -84,6 +85,51 @@ def test_long_transcript_is_summarized_in_parts_then_merged():
     assert parts > 1
     final = client.requests[-1]["messages"][1]["content"]
     assert all(f"answer {i}" in final for i in range(1, parts + 1))
+
+
+def test_each_style_has_its_own_instructions_and_heading():
+    prompts = set()
+    for name, chosen in STYLES.items():
+        client = FakeClient()
+        result = summarize("שלום עולם", KEYED, title="בדיקה", client=client, style_name=name)
+        system = client.requests[0]["messages"][0]["content"]
+        assert chosen.instructions in system and "כתוב את התשובה בעברית." in system
+        assert result.startswith(f"# {chosen.headings[0]}: בדיקה\n")
+        prompts.add(system)
+    assert len(prompts) == len(STYLES)
+
+
+def test_english_recordings_get_an_english_summary():
+    client = FakeClient()
+    result = summarize("hello world", KEYED, title="talk", client=client, style_name="meeting", language="en")
+    assert "Write the answer in English." in client.requests[0]["messages"][0]["content"]
+    assert result.startswith("# Meeting summary: talk\n")
+
+
+def test_unknown_style_is_rejected_before_transcribing(tmp_path):
+    class MustNotRun:
+        def transcribe(self, media, progress=None):
+            raise AssertionError("transcribed with a bad style")
+
+    with pytest.raises(ValueError, match="Unknown summary style"):
+        core.process_file(tmp_path / "talk.mp3", MustNotRun(), KEYED, style_name="poem")
+
+
+def test_chapters_style_reads_the_transcript_with_times(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_summary(text, settings, **kwargs):
+        seen.update(text=text, **kwargs)
+        return "ok"
+
+    monkeypatch.setattr(core, "summarize", fake_summary)
+    media = tmp_path / "talk.mp3"
+    media.write_bytes(b"")
+    core.process_file(media, FakeTranscriber(), KEYED, style_name="chapters")
+    assert seen["text"] == "[00:00 -> 00:03] שלום לכולם"
+    assert seen["style_name"] == "chapters"
+    core.process_file(media, FakeTranscriber(), KEYED, style_name="lecture")
+    assert seen["text"] == "שלום לכולם"
 
 
 def test_summary_needs_key_and_text():
