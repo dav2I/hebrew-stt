@@ -11,7 +11,7 @@ from typing import Optional, Sequence
 from . import __version__
 from .core import collect_media, process_file
 from .summarize import DEFAULT_STYLE, STYLES, load_settings
-from .transcribe import DEFAULT_MODEL, MEDIA_EXTENSIONS, Transcriber, format_timestamp
+from .transcribe import DEFAULT_LANGUAGE, LANGUAGES, MEDIA_EXTENSIONS, Transcriber, format_timestamp
 
 log = logging.getLogger("hebrew_stt")
 
@@ -43,11 +43,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hebrew-stt",
         description=(
-            "Transcribe Hebrew audio/video locally, with an optional AI summary. "
+            "Transcribe Hebrew or English audio/video locally, with an optional AI summary. "
             "Run without files to use it in the browser."
         ),
     )
     parser.add_argument("files", nargs="*", help="audio or video files, or folders that contain them")
+    parser.add_argument(
+        "-l", "--language", choices=list(LANGUAGES), default=DEFAULT_LANGUAGE,
+        help="language of the recordings: " + ", ".join(f"{c} ({p.label})" for c, p in LANGUAGES.items())
+        + f". Default: {DEFAULT_LANGUAGE}",
+    )
     parser.add_argument("--no-summary", action="store_true", help="only transcribe, even if an API key is set")
     parser.add_argument(
         "--style", choices=list(STYLES), default=DEFAULT_STYLE, metavar="STYLE",
@@ -59,7 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="where to save results (default: next to each file; in the browser: Documents/hebrew-stt)",
     )
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto", help="default: auto")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Whisper model in CTranslate2 format (default: {DEFAULT_MODEL})")
+    parser.add_argument(
+        "--model",
+        help="another Whisper model in CTranslate2 format for the chosen language (defaults: "
+        + ", ".join(f"{c}: {p.model}" for c, p in LANGUAGES.items()) + ")",
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -82,7 +91,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not args.files:
         from .web import serve
 
-        return serve(model=args.model, device=args.device, output_dir=args.output_dir)
+        return serve(
+            models={args.language: args.model} if args.model else None,
+            device=args.device, output_dir=args.output_dir,
+        )
 
     missing = [name for name in args.files if not Path(name).exists()]
     for name in missing:
@@ -97,7 +109,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         log.info("No summary API key is set, so only transcribing (see README, 'AI summary').")
         settings = None
 
-    transcriber = Transcriber(model=args.model, device=args.device)
+    transcriber = Transcriber(model=args.model, device=args.device, language=args.language)
     errors = len(missing)
     for i, path in enumerate(media, start=1):
         log.info("[%d/%d] %s", i, len(media), path.name)
@@ -105,7 +117,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             result = process_file(
                 path, transcriber, settings, args.output_dir, progress=bar, on_status=log.info,
-                style_name=args.style,
+                style_name=args.style, language=args.language,
             )
         except Exception as exc:
             bar.finish()

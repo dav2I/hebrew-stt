@@ -1,4 +1,4 @@
-"""Local transcription with faster-whisper and the ivrit-ai Hebrew model."""
+"""Local transcription with faster-whisper: Hebrew (ivrit-ai) or English (distil-whisper)."""
 
 from __future__ import annotations
 
@@ -12,8 +12,34 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-DEFAULT_MODEL = "ivrit-ai/whisper-large-v3-turbo-ct2"
-LANGUAGE = "he"
+
+
+@dataclass(frozen=True)
+class LanguageProfile:
+    code: str  # Whisper language code
+    label: str
+    model: str  # default model: a Hugging Face repo in CTranslate2 format
+    download_size: str
+    condition_on_previous_text: bool = True
+
+
+LANGUAGES: dict[str, LanguageProfile] = {
+    # Whisper large-v3-turbo fine-tuned on Hebrew by ivrit-ai.
+    "he": LanguageProfile("he", "Hebrew", "ivrit-ai/whisper-large-v3-turbo-ct2", "1.6 GB"),
+    # English-only distilled Whisper: about as accurate as large-v3 and much faster (2 decoder
+    # layers). Its authors advise against conditioning on the previous text.
+    "en": LanguageProfile(
+        "en", "English", "distil-whisper/distil-large-v3.5-ct2", "1.5 GB", condition_on_previous_text=False,
+    ),
+}
+DEFAULT_LANGUAGE = "he"
+DEFAULT_MODEL = LANGUAGES[DEFAULT_LANGUAGE].model
+
+
+def language_profile(code: str) -> LanguageProfile:
+    if code not in LANGUAGES:
+        raise ValueError(f"Unknown language: {code}. Choose one of: {', '.join(LANGUAGES)}.")
+    return LANGUAGES[code]
 
 MEDIA_EXTENSIONS = frozenset({
     ".mp3", ".m4a", ".wav", ".flac", ".ogg", ".opus", ".aac", ".wma",
@@ -172,13 +198,19 @@ def _is_cuda_error(exc: Exception) -> bool:
 # --------------------------------------------------------------- transcriber
 
 class Transcriber:
-    """Loads the Whisper model once and transcribes files with it."""
+    """Loads the Whisper model for one language once and transcribes files with it."""
 
-    def __init__(self, model: str = DEFAULT_MODEL, device: str = "auto"):
-        self.model_name = model
+    def __init__(self, model: Optional[str] = None, device: str = "auto", language: str = DEFAULT_LANGUAGE):
+        self.profile = language_profile(language)
+        self.language = language
+        self.model_name = model or self.profile.model
         self.requested_device = device
         self.device: Optional[str] = None
         self._model = None
+
+    def unload(self) -> None:
+        self._model = None
+        self.device = None
 
     def _model_path(self) -> str:
         """Local model folder; downloads from Hugging Face only if not cached yet."""
@@ -189,7 +221,8 @@ class Transcriber:
         try:
             return download_model(self.model_name, local_files_only=True)
         except Exception:
-            log.info("Downloading %s (about 1.6 GB, first run only)...", self.model_name)
+            size = f"about {self.profile.download_size}, " if self.model_name == self.profile.model else ""
+            log.info("Downloading %s (%sfirst time only)...", self.model_name, size)
             return download_model(self.model_name)
 
     def _load(self, device: str, compute_type: str) -> None:
@@ -237,7 +270,8 @@ class Transcriber:
     def _run(self, media: Path, progress: Optional[ProgressCallback]) -> Transcript:
         segments, info = self._model.transcribe(
             str(media),
-            language=LANGUAGE,
+            language=self.language,
+            condition_on_previous_text=self.profile.condition_on_previous_text,
             beam_size=5,
             vad_filter=True,
             vad_parameters={"min_silence_duration_ms": 500},
@@ -255,3 +289,26 @@ class Transcriber:
         if progress:
             progress(1.0, total, total)
         return Transcript(result, total)
+
+
+class TranscriberPool:
+    """One Transcriber per language, made on first use.
+
+    Only the language used last keeps its model loaded, so switching languages
+    never holds two models in memory.
+    """
+
+    def __init__(self, device: str = "auto", models: Optional[dict[str, str]] = None):
+        self.device = device
+        self.models = dict(models or {})
+        self._by_language: dict[str, Transcriber] = {}
+
+    def __call__(self, language: str) -> Transcriber:
+        current = self._by_language.get(language)
+        if current is None:
+            current = Transcriber(self.models.get(language), self.device, language)
+            self._by_language[language] = current
+        for other in self._by_language.values():
+            if other is not current:
+                other.unload()
+        return current

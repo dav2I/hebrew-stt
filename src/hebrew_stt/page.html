@@ -38,6 +38,7 @@
   .muted { color: var(--muted); font-size: 14px; }
   .options { display: flex; align-items: center; gap: 8px 14px; margin: 14px 2px; flex-wrap: wrap; }
   .options label { display: flex; gap: 8px; align-items: center; }
+  .options + .options { margin-top: -4px; }
   .options input:disabled + span { color: var(--muted); }
   select { font: inherit; font-size: 14px; padding: 4px 8px; border-radius: 8px;
            border: 1px solid var(--border); background: var(--card); color: var(--text); }
@@ -83,7 +84,7 @@
   <header>
     <div>
       <h1>Hebrew STT</h1>
-      <p class="sub">Hebrew transcription that runs on this computer.</p>
+      <p class="sub">Hebrew and English transcription that runs on this computer.</p>
     </div>
     <button id="settings-button" type="button">Settings</button>
   </header>
@@ -94,6 +95,10 @@
     <strong>Drop audio or video files here</strong>
     <span class="muted">or click to choose &middot; MP3, M4A, WAV, MP4, MKV and more</span>
     <input id="picker" type="file" multiple hidden>
+  </div>
+
+  <div class="options">
+    <label>Language <select id="language" aria-label="Language of the recordings"></select></label>
   </div>
 
   <div class="options">
@@ -216,7 +221,7 @@ function render(card, job) {
   const pct = `${Math.round(job.progress * 100)}%`;
   switch (job.state) {
     case "queued": setState(card, "Waiting", "", 0); break;
-    case "loading": setState(card, "Loading the model (first run downloads ~1.6 GB)...", "", 0); break;
+    case "loading": setState(card, "Loading the model (the first time it downloads ~1.5 GB)...", "", 0); break;
     case "transcribing":
       setState(card, job.duration
         ? `Transcribing ${pct} · ${clock(job.position)} / ${clock(job.duration)}`
@@ -312,6 +317,7 @@ function upload(file) {
     name: file.name,
     summary: $("summary").checked ? "1" : "0",
     style: $("style").value,
+    language: $("language").value,
   });
   const xhr = new XMLHttpRequest();
   xhr.open("PUT", `/api/upload?${params}`);
@@ -391,10 +397,7 @@ function showSummaryOption(s) {
   const box = $("summary");
   const hint = $("summary-hint");
   const select = $("style");
-  if (!select.options.length) {
-    for (const st of s.styles) select.append(el("option", { value: st.id, textContent: st.label }));
-    select.value = s.styles.some((st) => st.id === prefs.style) ? prefs.style : s.default_style;
-  }
+  fillSelect(select, s.styles, prefs.style, s.default_style);
   hint.textContent = "";
   box.disabled = !s.enabled;
   if (!s.enabled) {
@@ -409,8 +412,15 @@ function showSummaryOption(s) {
   select.disabled = !box.checked;
 }
 
+function fillSelect(select, items, saved, fallback) {
+  if (select.options.length) return;
+  for (const item of items) select.append(el("option", { value: item.id, textContent: item.label }));
+  select.value = items.some((item) => item.id === saved) ? saved : fallback;
+}
+
 async function loadSettings() {
   const s = await api("/api/settings");
+  fillSelect($("language"), s.languages, prefs.language, s.default_language);
   showSummaryOption(s);
   return s;
 }
@@ -463,6 +473,7 @@ $("summary").addEventListener("change", (e) => {
   $("style").disabled = !e.target.checked;
 });
 $("style").addEventListener("change", (e) => savePref("style", e.target.value));
+$("language").addEventListener("change", (e) => savePref("language", e.target.value));
 $("open-folder").addEventListener("click", () => api("/api/open-folder", { method: "POST" }).catch(() => {}));
 
 loadSettings().catch(() => { $("offline").hidden = false; });

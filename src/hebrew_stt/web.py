@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
-from typing import BinaryIO, Optional
+from typing import BinaryIO, Callable, Optional
 from urllib.parse import parse_qs, quote, urlparse
 
 from .core import Cancelled, process_file
@@ -37,7 +37,16 @@ from .summarize import (
     settings_file,
     style,
 )
-from .transcribe import MEDIA_EXTENSIONS, OutputPaths, Transcriber, safe_stem
+from .transcribe import (
+    DEFAULT_LANGUAGE,
+    LANGUAGES,
+    MEDIA_EXTENSIONS,
+    OutputPaths,
+    Transcriber,
+    TranscriberPool,
+    language_profile,
+    safe_stem,
+)
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +88,7 @@ class Job:
     media: Path
     summarize: bool
     style: str = DEFAULT_STYLE
+    language: str = DEFAULT_LANGUAGE
     state: str = "queued"  # queued, loading, transcribing, summarizing, done, failed, cancelled
     progress: float = 0.0
     position: float = 0.0
@@ -112,10 +122,13 @@ class Job:
 
 
 class WebApp:
-    """Upload queue and one worker thread, so files are transcribed one at a time."""
+    """Upload queue and one worker thread, so files are transcribed one at a time.
 
-    def __init__(self, transcriber: Transcriber, output_dir: Path):
-        self.transcriber = transcriber
+    `transcribers` gives the Transcriber for a language code (a TranscriberPool).
+    """
+
+    def __init__(self, transcribers: Callable[[str], Transcriber], output_dir: Path):
+        self.transcribers = transcribers
         self.output_dir = Path(output_dir)
         self.token = secrets.token_urlsafe(24)
         self.upload_dir = Path(tempfile.mkdtemp(prefix="hebrew-stt-"))
@@ -143,13 +156,15 @@ class WebApp:
             job.holds_name = False
 
     def add_upload(
-        self, name: str, stream: BinaryIO, length: int, summarize: bool, style_name: str = DEFAULT_STYLE,
+        self, name: str, stream: BinaryIO, length: int, summarize: bool,
+        style_name: str = DEFAULT_STYLE, language: str = DEFAULT_LANGUAGE,
     ) -> Job:
         suffix = Path(name).suffix.lower()
         if suffix not in MEDIA_EXTENSIONS:
             # No name in the message: the page shows it on the file's card, which already has the name.
             raise ValueError("Not an audio or video file.")
-        style(style_name)  # raises ValueError for an unknown style
+        style(style_name)  # these raise ValueError for an unknown choice
+        language_profile(language)
         with self._lock:
             stem = self._reserve_stem(name)
         job_id = uuid.uuid4().hex[:12]
@@ -170,7 +185,7 @@ class WebApp:
             with self._lock:
                 self._reserved.discard(stem.lower())
             raise
-        job = Job(job_id, name, media, summarize, style_name)
+        job = Job(job_id, name, media, summarize, style_name, language)
         with self._lock:
             self.jobs[job_id] = job
         self._queue.put(job)
@@ -215,9 +230,10 @@ class WebApp:
     def _run(self, job: Job) -> None:
         if job.stop.is_set():
             raise Cancelled()
-        if not self.transcriber.loaded:
+        transcriber = self.transcribers(job.language)
+        if not transcriber.loaded:
             self._set_state(job, "loading")
-            self.transcriber.load()
+            transcriber.load()
         self._set_state(job, "transcribing")
         settings = load_settings() if job.summarize else None
 
@@ -228,8 +244,8 @@ class WebApp:
             self._set_state(job, "summarizing")
 
         result = process_file(
-            job.media, self.transcriber, settings, self.output_dir, progress, status, job.stop,
-            style_name=job.style,
+            job.media, transcriber, settings, self.output_dir, progress, status, job.stop,
+            style_name=job.style, language=job.language,
         )
         with self._lock:
             job.paths = result.paths
@@ -258,6 +274,8 @@ class WebApp:
             "path": str(settings_file()),
             "styles": [{"id": key, "label": s.label} for key, s in STYLES.items()],
             "default_style": DEFAULT_STYLE,
+            "languages": [{"id": code, "label": p.label} for code, p in LANGUAGES.items()],
+            "default_language": DEFAULT_LANGUAGE,
         }
 
     def update_settings(self, data: dict) -> dict:
@@ -376,6 +394,7 @@ class Handler(BaseHTTPRequestHandler):
                 name, self.rfile, length,
                 summarize=query.get("summary", ["0"])[0] == "1",
                 style_name=query.get("style", [DEFAULT_STYLE])[0],
+                language=query.get("language", [DEFAULT_LANGUAGE])[0],
             )
         except ValueError as exc:
             return self._error(400, str(exc))
@@ -418,12 +437,14 @@ def make_server(app: WebApp, port: int = 0) -> ThreadingHTTPServer:
 
 
 def serve(
-    model: str,
+    models: Optional[dict[str, str]] = None,
     device: str = "auto",
     output_dir: Optional[Path] = None,
     open_browser: bool = True,
 ) -> int:
-    app = WebApp(Transcriber(model=model, device=device), Path(output_dir) if output_dir else default_output_dir())
+    """Run the page. `models` replaces the default model of a language, e.g. {"en": "distil-small.en"}."""
+    pool = TranscriberPool(device, models)
+    app = WebApp(pool, Path(output_dir) if output_dir else default_output_dir())
     try:
         server = make_server(app, PREFERRED_PORT)
     except OSError:

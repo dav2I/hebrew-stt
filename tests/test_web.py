@@ -22,6 +22,18 @@ class FakeTranscriber:
         return Transcript([Segment(0, 2, "שלום")], 2.0)
 
 
+class FakePool:
+    """Stands in for TranscriberPool: one transcriber for every language, and a log of languages."""
+
+    def __init__(self):
+        self.transcriber = FakeTranscriber()
+        self.languages = []
+
+    def __call__(self, language):
+        self.languages.append(language)
+        return self.transcriber
+
+
 @pytest.fixture
 def server(tmp_path, monkeypatch):
     home = tmp_path / "home"
@@ -31,7 +43,7 @@ def server(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.chdir(tmp_path)
 
-    app = web.WebApp(FakeTranscriber(), tmp_path / "out")
+    app = web.WebApp(FakePool(), tmp_path / "out")
     srv = web.make_server(app)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield app, srv.server_address[1]
@@ -144,7 +156,7 @@ def test_unsupported_upload_is_rejected(server):
 
 def test_stop_a_running_and_a_queued_file(server, tmp_path):
     app, port = server
-    app.transcriber = SlowTranscriber()
+    slow = app.transcribers.transcriber = SlowTranscriber()
     running = upload(port, app.token, "long.mp3")[1]
     queued = upload(port, app.token, "next.mp3")[1]
     wait_state(port, app.token, running["id"], ("transcribing",))
@@ -153,7 +165,7 @@ def test_stop_a_running_and_a_queued_file(server, tmp_path):
     assert cancel(port, app.token, running["id"])[1]["state"] == "cancelled"
 
     # The worker drops both, so the next file runs, and the stopped name is free again.
-    app.transcriber.release.set()
+    slow.release.set()
     again = wait_done(port, app.token, upload(port, app.token, "long.mp3")[1]["id"])
     assert again["files"]["text"] == "long.txt"
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["long.txt", "long_timestamps.txt"]
@@ -199,6 +211,18 @@ def test_upload_takes_a_summary_style(server):
     _, _, body = call(port, "GET", "/api/settings", token=app.token)
     styles = json.loads(body)["styles"]
     assert styles[0] == {"id": "general", "label": "General"} and len(styles) > 5
+
+
+def test_upload_takes_a_language(server):
+    app, port = server
+    job = wait_done(port, app.token, upload(port, app.token, "talk.mp3", language="en")[1]["id"])
+    assert job["state"] == "done" and app.transcribers.languages == ["en"]
+    status, data = upload(port, app.token, "talk.mp3", language="fr")
+    assert status == 400 and data["error"].startswith("Unknown language: fr.")
+    _, _, body = call(port, "GET", "/api/settings", token=app.token)
+    settings = json.loads(body)
+    assert settings["languages"] == [{"id": "he", "label": "Hebrew"}, {"id": "en", "label": "English"}]
+    assert settings["default_language"] == "he"
 
 
 def test_settings_never_send_the_key_back(server):
