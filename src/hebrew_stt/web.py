@@ -31,6 +31,7 @@ from .summarize import (
     DEFAULT_STYLE,
     STYLES,
     SummarySettings,
+    ask,
     load_settings,
     read_saved_settings,
     save_settings,
@@ -300,6 +301,22 @@ class WebApp:
             found = []
         return [{"start": s.start, "end": s.end, "text": s.text} for s in found]
 
+    def ask_result(self, stem: str, question: str, history: object = ()) -> dict:
+        """Answer a question about a result from its transcript with times."""
+        paths = self.result_paths(stem)
+        if paths is None:
+            raise KeyError(stem)
+        if not isinstance(history, list):
+            raise ValueError("history must be a list.")
+        pairs = []
+        for turn in history:
+            if not isinstance(turn, dict):
+                raise ValueError("Each history item must be an object.")
+            pairs.append((str(turn.get("question") or "")[:20_000], str(turn.get("answer") or "")[:20_000]))
+        source = paths.timestamps if paths.timestamps.is_file() else paths.text
+        answer = ask(source.read_text(encoding="utf-8"), str(question or ""), load_settings(), pairs)
+        return {"answer": answer}
+
     def summarize_result(self, stem: str, style_name: str, terms: str = "") -> dict:
         """Write a new summary for a finished result, replacing the old one."""
         paths = self.result_paths(stem)
@@ -496,19 +513,23 @@ class Handler(BaseHTTPRequestHandler):
             open_folder(self.app.output_dir)
             return self._json({"ok": True})
         result = self._result_route(url.path)
-        if result and result[1] == "summarize":
+        if result and result[1] in ("summarize", "ask"):
+            stem, action = result
             try:
                 data = self._read_json()
+                if action == "ask":
+                    return self._json(self.app.ask_result(stem, data.get("question"), data.get("history") or []))
                 return self._json(self.app.summarize_result(
-                    result[0], str(data.get("style") or DEFAULT_STYLE), str(data.get("terms") or ""),
+                    stem, str(data.get("style") or DEFAULT_STYLE), str(data.get("terms") or ""),
                 ))
             except KeyError:
                 return self._error(404, "Not found.")
             except ValueError as exc:
                 return self._error(400, str(exc))
             except Exception as exc:  # the provider: network, key, quota...
-                log.warning("Summary failed: %s", exc)
-                return self._error(502, f"Summary failed: {type(exc).__name__}: {exc}")
+                what = "The answer" if action == "ask" else "Summary"
+                log.warning("%s failed: %s", what, exc)
+                return self._error(502, f"{what} failed: {type(exc).__name__}: {exc}")
         parts = url.path.strip("/").split("/")
         if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "cancel":
             job = self.app.cancel(parts[2])

@@ -46,12 +46,13 @@ def test_names_and_paths_are_shown_through_the_helper():
     assert "${s.path}" not in SCRIPT
 
 
-def test_only_transcript_text_picks_its_own_direction():
-    # Transcripts and summaries are content, so the browser picks right-to-left for Hebrew:
-    # the text viewer and the text of each timed line. (The list of timed lines gets its
-    # direction from the language of its lines.)
-    assert re.findall(r'el\("(\w+)", \{[^}]*\bdir: "auto"', SCRIPT) == ["pre", "span"]
-    assert 'el("span", { dir: "auto", textContent: seg.text })' in SCRIPT
+def test_only_content_picks_its_own_direction():
+    # Transcripts, summaries, questions and answers are content, so the browser picks
+    # right-to-left for Hebrew. Names never do (they go through fileName()).
+    automatic = re.findall(r'el\("\w+", \{[^}]*\bdir: "auto"[^}]*\}', SCRIPT)
+    assert 'el("pre", { dir: "auto", textContent: "Loading..." }' in automatic
+    assert 'el("span", { dir: "auto", textContent: seg.text }' in automatic
+    assert not [found for found in automatic if re.search(r"\bname\b|job-name|fileName", found)]
     parser = ElementsById()
     parser.feed(PAGE)
     assert parser.auto_direction == []

@@ -305,6 +305,34 @@ def test_segments_come_from_the_subtitles_or_the_timestamps(server, tmp_path):
     assert call(port, "GET", "/api/results/missing/segments", token=app.token)[0] == 404
 
 
+def test_ask_about_a_result(server, monkeypatch):
+    app, port = server
+    job = wait_done(port, app.token, upload(port, app.token, "talk.mp3")[1]["id"])
+    seen = {}
+
+    def fake_ask(transcript, question, settings, history=(), client=None):
+        if not settings.enabled:
+            raise ValueError("Add an API key in Settings to ask questions.")
+        seen.update(transcript=transcript, question=question, history=history)
+        return "At [00:01] they said hello."
+
+    monkeypatch.setattr(web, "ask", fake_ask)
+
+    def post(payload, name=job["result"]):
+        status, _, data = call(port, "POST", f"/api/results/{name}/ask", json.dumps(payload).encode(),
+                               app.token, headers={"Content-Type": "application/json"})
+        return status, json.loads(data)
+
+    assert post({"question": "What was said?"})[0] == 400  # no key yet
+    monkeypatch.setenv("SUMMARY_API_KEY", "test-key")
+    history = [{"question": "Who?", "answer": "Someone."}]
+    assert post({"question": "What was said?", "history": history}) == (200, {"answer": "At [00:01] they said hello."})
+    assert seen["transcript"] == "[00:00 -> 00:02] שלום\n"  # with times, to point at moments
+    assert seen["history"] == [("Who?", "Someone.")]
+    assert post({"question": "x", "history": "nope"})[0] == 400
+    assert post({"question": "x"}, name="missing")[0] == 404
+
+
 def test_settings_never_send_the_key_back(server):
     app, port = server
     key = "sk-test-1234567890"

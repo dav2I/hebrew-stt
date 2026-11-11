@@ -12,6 +12,7 @@ from hebrew_stt.summarize import (
     SummarySettings,
     load_settings,
     read_saved_settings,
+    ask,
     save_settings,
     summarize,
 )
@@ -139,6 +140,29 @@ def test_names_and_terms_reach_the_summary():
     client = FakeClient()
     summarize("שלום", KEYED, client=client)
     assert "בכתיב הנכון" not in client.requests[0]["messages"][1]["content"]
+
+
+def test_ask_sends_the_transcript_the_conversation_and_the_question():
+    client = FakeClient()
+    history = [(f"q{i}", f"a{i}") for i in range(12)]
+    answer = ask("[00:01 -> 00:03] שלום", " מה נאמר? ", KEYED, history, client=client)
+    messages = client.requests[0]["messages"]
+    assert answer == "answer 1"
+    assert messages[0]["role"] == "system" and messages[0]["content"].endswith("[00:01 -> 00:03] שלום")
+    assert [m["content"] for m in messages[1:3]] == ["q2", "a2"]  # only the last 10 turns
+    assert len(messages) == 1 + 2 * 10 + 1
+    assert messages[-1] == {"role": "user", "content": "מה נאמר?"}
+
+
+def test_ask_checks_its_input():
+    for args, message in [
+        (("text", "  ", KEYED), "Write a question"),
+        (("text", "x" * 2001, KEYED), "limited to 2000"),
+        (("text", "why?", SummarySettings()), "API key"),
+        ((" ", "why?", KEYED), "nothing to ask about"),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            ask(*args, client=FakeClient())
 
 
 def test_summary_needs_key_and_text():

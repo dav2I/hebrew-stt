@@ -78,6 +78,13 @@
   .line.now { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
   .line time { flex: none; color: var(--muted); font-size: 13px; padding-top: 3px; font-variant-numeric: tabular-nums; }
   .line span { flex: 1; }
+  .chat { display: grid; gap: 6px; max-height: 440px; overflow: auto; }
+  .chat .q { font-weight: 600; margin-top: 8px; }
+  .chat .a { white-space: pre-wrap; font: 16px/1.7 system-ui, -apple-system, "Segoe UI", Arial, sans-serif; }
+  .chat .time { font: inherit; }
+  .ask-form { display: flex; gap: 8px; margin-top: 10px; align-items: flex-end; }
+  .ask-form textarea { flex: 1; font: inherit; padding: 7px 9px; border-radius: 8px; resize: vertical;
+                       border: 1px solid var(--border); background: var(--bg); color: var(--text); }
   .viewer { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
   .viewer-tools { display: flex; gap: 6px; justify-content: flex-end; margin-bottom: 8px; flex-wrap: wrap; }
   .viewer-tools .grow { margin-right: auto; display: flex; gap: 6px; }
@@ -170,7 +177,7 @@
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const EXTENSIONS = [".mp3", ".m4a", ".wav", ".flac", ".ogg", ".opus", ".aac", ".wma",
                     ".mp4", ".mkv", ".webm", ".mov", ".avi"];
-const LABELS = { summary: "Summary", text: "Transcript", timestamps: "With timestamps" };
+const LABELS = { summary: "Summary", text: "Transcript", timestamps: "With timestamps", ask: "Ask" };
 const FINISHED = ["done", "failed", "cancelled"];
 const $ = (id) => document.getElementById(id);
 const cards = new Map();   // job id -> card
@@ -286,8 +293,9 @@ function showResult(card, result, files, autoOpen) {
   card.result = result;
   card.files = files;
   card.tabs.replaceChildren();
-  for (const kind of ["summary", "text", "timestamps"]) {
-    if (!files[kind] && !(kind === "summary" && aiEnabled)) continue;
+  for (const kind of ["summary", "text", "timestamps", "ask"]) {
+    const needsAi = kind === "ask" || (kind === "summary" && !files.summary);
+    if (needsAi ? !aiEnabled : !files[kind]) continue;
     const button = el("button", { type: "button", textContent: LABELS[kind] });
     button.dataset.kind = kind;
     button.setAttribute("aria-pressed", String(card.open === kind));
@@ -329,6 +337,7 @@ function toggleView(card, kind) {
   card.viewer = el("div", { className: "viewer" }, tools, body);
   card.root.append(card.viewer);
   if (kind === "summary") showSummary(card, tools, body);
+  else if (kind === "ask") showAsk(card, body);
   else if (kind === "timestamps") showTimestamps(card, tools, body);
   else showText(card, kind, tools, body);
 }
@@ -415,11 +424,7 @@ async function showTimestamps(card, tools, body) {
     const row = el("button", { type: "button", className: "line" },
       el("time", { textContent: clock(seg.start, long) }), el("span", { dir: "auto", textContent: seg.text }));
     row.title = card.player ? "Play from here" : "Use “Listen along…” to play from here";
-    row.addEventListener("click", () => {
-      if (!card.player) return;
-      card.player.currentTime = seg.start;
-      card.player.play().catch(() => {});
-    });
+    row.addEventListener("click", () => play(card, seg.start));
     box.append(row);
     return { row, start: seg.start };
   });
@@ -454,6 +459,78 @@ function highlight(card) {
   if (row.offsetTop < box.scrollTop || row.offsetTop + row.offsetHeight > box.scrollTop + box.clientHeight) {
     box.scrollTop = row.offsetTop - box.clientHeight / 3;
   }
+}
+
+// ---------------------------------------------------------------- ask
+
+const TIME_IN_ANSWER = /\[(?:\d{1,2}:)?\d{1,2}:\d{2}\]/g;
+
+function play(card, seconds) {
+  if (!card.player) return;
+  card.player.currentTime = seconds;
+  card.player.play().catch(() => {});
+}
+
+// An answer, with times like [03:12] turned into buttons that play from there.
+function answerNode(card, text) {
+  const node = el("div", { className: "a", dir: "auto" });
+  let last = 0;
+  for (const match of text.matchAll(TIME_IN_ANSWER)) {
+    const seconds = match[0].slice(1, -1).split(":").reduce((total, part) => total * 60 + Number(part), 0);
+    const jump = el("button", { type: "button", className: "link time", dir: "ltr", textContent: match[0] });
+    jump.title = card.player ? "Play from here" : "Use “Listen along…” to play from here";
+    jump.addEventListener("click", () => play(card, seconds));
+    node.append(text.slice(last, match.index), jump);
+    last = match.index + match[0].length;
+  }
+  node.append(text.slice(last));
+  return node;
+}
+
+function showAsk(card, body) {
+  card.chat = card.chat || [];
+  const log = el("div", { className: "chat" });
+  for (const turn of card.chat) log.append(el("div", { className: "q", dir: "auto", textContent: turn.question }), answerNode(card, turn.answer));
+  if (!card.chat.length) {
+    log.append(el("p", {
+      className: "muted",
+      textContent: "Answers come only from this recording. Times like [03:12] play the recording from there.",
+    }));
+  }
+  const input = el("textarea", { rows: 2, maxLength: 2000, placeholder: "Ask about this recording, e.g. What did they decide?" });
+  input.dir = "auto";
+  input.setAttribute("aria-label", "Your question");
+  const send = el("button", { type: "button", className: "primary", textContent: "Ask" });
+  body.replaceChildren(log, el("div", { className: "ask-form" }, input, send));
+
+  async function submit() {
+    const question = input.value.trim();
+    if (!question || send.disabled) return;
+    input.disabled = send.disabled = true;
+    send.textContent = "Thinking...";
+    if (!card.chat.length) log.replaceChildren();
+    log.append(el("div", { className: "q", dir: "auto", textContent: question }));
+    try {
+      const data = await api(resultUrl(card, "ask"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, history: card.chat }),
+      });
+      card.chat.push({ question, answer: data.answer });
+      log.append(answerNode(card, data.answer));
+      input.value = "";
+    } catch (error) {
+      log.append(el("p", { className: "note", textContent: error.message }));
+    }
+    input.disabled = send.disabled = false;
+    send.textContent = "Ask";
+    log.scrollTop = log.scrollHeight;
+    input.focus();
+  }
+  send.addEventListener("click", submit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+  });
 }
 
 function showSummary(card, tools, body) {

@@ -12,7 +12,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence
 
 APP_NAME = "hebrew-stt"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
@@ -343,3 +343,52 @@ def summarize(
     heading = chosen.headings[1 if language == "en" else 0]
     header = f"# {heading}: {title}\n\n" if title else ""
     return f"{header}{body}\n"
+
+
+# ---------------------------------------------------------------------- ask
+
+ASK_PROMPT = """אתה עונה על שאלות על הקלטה, לפי התמלול שלה בלבד.
+- ענה רק לפי מה שנאמר בהקלטה. אם התשובה לא מופיעה בה, אמור זאת במפורש ואל תנחש.
+- כשזה עוזר, ציין את הזמן שבו הדבר נאמר, בדיוק בפורמט [MM:SS] (או [HH:MM:SS] בהקלטה ארוכה משעה).
+- התמלול נעשה אוטומטית ויכולות להיות בו שגיאות זיהוי; כשמילה נראית שגויה, הבן אותה מההקשר.
+- ענה בשפה שבה נשאלה השאלה, בקצרה ובבהירות, בפורמט Markdown.
+
+התמלול, עם זמנים:
+
+{transcript}"""
+
+MAX_QUESTION_CHARS = 2000
+MAX_HISTORY_TURNS = 10
+
+
+def ask(
+    transcript: str,
+    question: str,
+    settings: SummarySettings,
+    history: Sequence[tuple[str, str]] = (),
+    client=None,
+) -> str:
+    """Answer a question about a recording from its transcript. `history` holds earlier
+    (question, answer) pairs of the same conversation, oldest first."""
+    question = question.strip()
+    if not question:
+        raise ValueError("Write a question first.")
+    if len(question) > MAX_QUESTION_CHARS:
+        raise ValueError(f"Questions are limited to {MAX_QUESTION_CHARS} characters.")
+    if not settings.enabled:
+        raise ValueError("Add an API key in Settings to ask questions.")
+    if not transcript.strip():
+        raise ValueError("No speech was found, so there is nothing to ask about.")
+    if client is None:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=settings.api_key, base_url=settings.base_url)
+    messages = [{"role": "system", "content": ASK_PROMPT.format(transcript=transcript.strip())}]
+    for earlier_question, earlier_answer in list(history)[-MAX_HISTORY_TURNS:]:
+        messages += [{"role": "user", "content": earlier_question}, {"role": "assistant", "content": earlier_answer}]
+    messages.append({"role": "user", "content": question})
+    response = client.chat.completions.create(model=settings.model, messages=messages)
+    content = response.choices[0].message.content
+    if not content or not content.strip():
+        raise RuntimeError("The provider returned an empty answer.")
+    return content.strip()
