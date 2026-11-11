@@ -307,11 +307,13 @@ def summarize(
     max_chars: int = CHUNK_CHARS,
     style_name: str = DEFAULT_STYLE,
     language: str = "he",
+    terms: str = "",
 ) -> str:
     """Summarize a transcript in the given style and language.
 
     For styles that need times (chapters), pass the transcript with timestamps.
-    Long transcripts are summarized in parts, then merged.
+    Long transcripts are summarized in parts, then merged. `terms` lists names and
+    words from the recording, so the summary spells them right.
     """
     chosen = style(style_name)
     if not settings.enabled:
@@ -323,6 +325,7 @@ def summarize(
         from openai import OpenAI
 
         client = OpenAI(api_key=settings.api_key, base_url=settings.base_url)
+    spelling = f"שמות ומונחים שמופיעים בהקלטה, בכתיב הנכון: {terms}\n\n" if terms.strip() else ""
 
     if len(chunks) == 1:
         intro, material = "להלן תמלול ההקלטה", chunks[0]
@@ -331,12 +334,12 @@ def summarize(
         notes = []
         for i, chunk in enumerate(chunks, start=1):
             log.info("Summarizing part %d of %d...", i, len(chunks))
-            notes.append(_chat(client, settings.model, part_prompt, f"חלק {i} מתוך {len(chunks)}:\n\n{chunk}"))
+            notes.append(_chat(client, settings.model, part_prompt, f"{spelling}חלק {i} מתוך {len(chunks)}:\n\n{chunk}"))
         intro = "להלן סיכומי ביניים של חלקי ההקלטה, לפי הסדר"
         material = "\n\n".join(f"## חלק {i}\n{note}" for i, note in enumerate(notes, start=1))
 
     named = f" ({title})" if title else ""
-    body = _chat(client, settings.model, _system_prompt(style_name, language), f"{intro}{named}:\n\n{material}")
+    body = _chat(client, settings.model, _system_prompt(style_name, language), f"{spelling}{intro}{named}:\n\n{material}")
     heading = chosen.headings[1 if language == "en" else 0]
     header = f"# {heading}: {title}\n\n" if title else ""
     return f"{header}{body}\n"

@@ -34,6 +34,16 @@ LANGUAGES: dict[str, LanguageProfile] = {
 }
 DEFAULT_LANGUAGE = "he"
 DEFAULT_MODEL = LANGUAGES[DEFAULT_LANGUAGE].model
+# Names and terms are given to the model as a prompt, which has room for about 220 tokens.
+MAX_TERMS_CHARS = 300
+
+
+def clean_terms(terms: Optional[str]) -> str:
+    """Names and terms that appear in a recording, as one line. Raises ValueError if too long."""
+    text = " ".join((terms or "").split())
+    if len(text) > MAX_TERMS_CHARS:
+        raise ValueError(f"Names and terms are limited to {MAX_TERMS_CHARS} characters.")
+    return text
 
 
 def language_profile(code: str) -> LanguageProfile:
@@ -255,23 +265,27 @@ class Transcriber:
             log.warning("Could not load the model on the GPU (%s). Using the CPU.", exc)
             self._load("cpu", "int8")
 
-    def transcribe(self, media: Path, progress: Optional[ProgressCallback] = None) -> Transcript:
+    def transcribe(
+        self, media: Path, progress: Optional[ProgressCallback] = None, terms: str = "",
+    ) -> Transcript:
+        """`terms`: names and words that appear in the recording, to help recognize them."""
         self.load()
         try:
-            return self._run(media, progress)
+            return self._run(media, progress, terms)
         except RuntimeError as exc:
             if not (self._can_fall_back() and _is_cuda_error(exc)):
                 raise
             log.warning("GPU transcription failed (%s). Retrying on the CPU.", exc)
             self._model = None
             self._load("cpu", "int8")
-            return self._run(media, progress)
+            return self._run(media, progress, terms)
 
-    def _run(self, media: Path, progress: Optional[ProgressCallback]) -> Transcript:
+    def _run(self, media: Path, progress: Optional[ProgressCallback], terms: str = "") -> Transcript:
         segments, info = self._model.transcribe(
             str(media),
             language=self.language,
             condition_on_previous_text=self.profile.condition_on_previous_text,
+            hotwords=clean_terms(terms) or None,
             beam_size=5,
             vad_filter=True,
             vad_parameters={"min_silence_duration_ms": 500},

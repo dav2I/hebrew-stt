@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hebrew_stt.transcribe import LANGUAGES, Transcriber, TranscriberPool
+from hebrew_stt.transcribe import LANGUAGES, MAX_TERMS_CHARS, Transcriber, TranscriberPool, clean_terms
 
 
 class FakeWhisper:
@@ -43,3 +43,19 @@ def test_pool_keeps_only_the_last_language_loaded():
     assert hebrew.model_name == LANGUAGES["he"].model
     assert not hebrew.loaded
     assert pool("he") is hebrew
+
+
+def test_names_and_terms_are_given_to_the_model_as_hotwords():
+    transcriber = Transcriber()
+    transcriber._model = FakeWhisper()
+    transcriber.transcribe("talk.mp3", terms="  Dr. Cohen,\n Dijkstra ")
+    transcriber.transcribe("talk.mp3")
+    first, second = transcriber._model.calls
+    assert first["hotwords"] == "Dr. Cohen, Dijkstra"
+    assert second["hotwords"] is None
+
+
+def test_names_and_terms_have_a_length_limit():
+    assert clean_terms("x" * MAX_TERMS_CHARS) == "x" * MAX_TERMS_CHARS
+    with pytest.raises(ValueError, match="limited to 300 characters"):
+        clean_terms("x" * (MAX_TERMS_CHARS + 1))

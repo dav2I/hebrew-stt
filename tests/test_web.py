@@ -16,7 +16,7 @@ class FakeTranscriber:
     def load(self):
         pass
 
-    def transcribe(self, media, progress=None):
+    def transcribe(self, media, progress=None, terms=""):
         if progress:
             progress(1.0, 2.0, 2.0)
         return Transcript([Segment(0, 2, "שלום")], 2.0)
@@ -101,7 +101,7 @@ class SlowTranscriber(FakeTranscriber):
     def __init__(self):
         self.release = threading.Event()
 
-    def transcribe(self, media, progress=None):
+    def transcribe(self, media, progress=None, terms=""):
         while not self.release.wait(0.02):
             progress(0.5, 1.0, 2.0)
         return super().transcribe(media, progress)
@@ -223,6 +223,14 @@ def test_upload_takes_a_language(server):
     settings = json.loads(body)
     assert settings["languages"] == [{"id": "he", "label": "Hebrew"}, {"id": "en", "label": "English"}]
     assert settings["default_language"] == "he"
+
+
+def test_upload_takes_names_and_terms(server):
+    app, port = server
+    status, job = upload(port, app.token, "talk.mp3", terms="Dr. Cohen,  Dijkstra")
+    assert status == 201 and app.jobs[job["id"]].terms == "Dr. Cohen, Dijkstra"
+    status, data = upload(port, app.token, "talk.mp3", terms="x" * 301)
+    assert status == 400 and "limited to 300 characters" in data["error"]
 
 
 def test_settings_never_send_the_key_back(server):

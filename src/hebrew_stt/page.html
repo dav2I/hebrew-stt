@@ -39,6 +39,10 @@
   .options { display: flex; align-items: center; gap: 8px 14px; margin: 14px 2px; flex-wrap: wrap; }
   .options label { display: flex; gap: 8px; align-items: center; }
   .options + .options { margin-top: -4px; }
+  .options .terms { flex: 1 1 260px; }
+  .options .terms input { flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 4px 8px;
+                          border-radius: 8px; border: 1px solid var(--border); background: var(--card);
+                          color: var(--text); }
   .options input:disabled + span { color: var(--muted); }
   select { font: inherit; font-size: 14px; padding: 4px 8px; border-radius: 8px;
            border: 1px solid var(--border); background: var(--card); color: var(--text); }
@@ -99,6 +103,9 @@
 
   <div class="options">
     <label>Language <select id="language" aria-label="Language of the recordings"></select></label>
+    <label class="terms">Names and terms
+      <input id="terms" type="text" maxlength="300" spellcheck="false" autocomplete="off"
+             placeholder="Optional, e.g. Dr. Cohen, Dijkstra"></label>
   </div>
 
   <div class="options">
@@ -318,6 +325,7 @@ function upload(file) {
     summary: $("summary").checked ? "1" : "0",
     style: $("style").value,
     language: $("language").value,
+    terms: $("terms").value.trim(),
   });
   const xhr = new XMLHttpRequest();
   xhr.open("PUT", `/api/upload?${params}`);
@@ -474,6 +482,8 @@ $("summary").addEventListener("change", (e) => {
 });
 $("style").addEventListener("change", (e) => savePref("style", e.target.value));
 $("language").addEventListener("change", (e) => savePref("language", e.target.value));
+$("terms").value = prefs.terms || "";
+$("terms").addEventListener("change", (e) => savePref("terms", e.target.value.trim()));
 $("open-folder").addEventListener("click", () => api("/api/open-folder", { method: "POST" }).catch(() => {}));
 
 loadSettings().catch(() => { $("offline").hidden = false; });

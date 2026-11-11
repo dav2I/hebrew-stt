@@ -108,7 +108,7 @@ def test_english_recordings_get_an_english_summary():
 
 def test_unknown_style_is_rejected_before_transcribing(tmp_path):
     class MustNotRun:
-        def transcribe(self, media, progress=None):
+        def transcribe(self, media, progress=None, terms=""):
             raise AssertionError("transcribed with a bad style")
 
     with pytest.raises(ValueError, match="Unknown summary style"):
@@ -132,6 +132,15 @@ def test_chapters_style_reads_the_transcript_with_times(tmp_path, monkeypatch):
     assert seen["text"] == "שלום לכולם"
 
 
+def test_names_and_terms_reach_the_summary():
+    client = FakeClient()
+    summarize("שלום", KEYED, client=client, terms="ד\"ר כהן, דייקסטרה")
+    assert "בכתיב הנכון: ד\"ר כהן, דייקסטרה" in client.requests[0]["messages"][1]["content"]
+    client = FakeClient()
+    summarize("שלום", KEYED, client=client)
+    assert "בכתיב הנכון" not in client.requests[0]["messages"][1]["content"]
+
+
 def test_summary_needs_key_and_text():
     with pytest.raises(ValueError):
         summarize("text", SummarySettings(), client=FakeClient())
@@ -142,7 +151,7 @@ def test_summary_needs_key_and_text():
 # --------------------------------------------------------------- processing
 
 class FakeTranscriber:
-    def transcribe(self, media, progress=None):
+    def transcribe(self, media, progress=None, terms=""):
         if progress:
             progress(1.0, 3.0, 3.0)
         return Transcript([Segment(0, 3, "שלום לכולם")], 3.0)
@@ -174,7 +183,7 @@ def test_stop_during_transcription_writes_nothing(tmp_path):
     stop = threading.Event()
 
     class StoppedMidway:
-        def transcribe(self, media, progress=None):
+        def transcribe(self, media, progress=None, terms=""):
             progress(0.5, 1.5, 3.0)  # first segment done
             stop.set()  # the user clicks Stop
             progress(1.0, 3.0, 3.0)  # the next segment notices

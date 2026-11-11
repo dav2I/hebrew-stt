@@ -44,6 +44,7 @@ from .transcribe import (
     OutputPaths,
     Transcriber,
     TranscriberPool,
+    clean_terms,
     language_profile,
     safe_stem,
 )
@@ -89,6 +90,7 @@ class Job:
     summarize: bool
     style: str = DEFAULT_STYLE
     language: str = DEFAULT_LANGUAGE
+    terms: str = ""
     state: str = "queued"  # queued, loading, transcribing, summarizing, done, failed, cancelled
     progress: float = 0.0
     position: float = 0.0
@@ -157,7 +159,7 @@ class WebApp:
 
     def add_upload(
         self, name: str, stream: BinaryIO, length: int, summarize: bool,
-        style_name: str = DEFAULT_STYLE, language: str = DEFAULT_LANGUAGE,
+        style_name: str = DEFAULT_STYLE, language: str = DEFAULT_LANGUAGE, terms: str = "",
     ) -> Job:
         suffix = Path(name).suffix.lower()
         if suffix not in MEDIA_EXTENSIONS:
@@ -165,6 +167,7 @@ class WebApp:
             raise ValueError("Not an audio or video file.")
         style(style_name)  # these raise ValueError for an unknown choice
         language_profile(language)
+        terms = clean_terms(terms)
         with self._lock:
             stem = self._reserve_stem(name)
         job_id = uuid.uuid4().hex[:12]
@@ -185,7 +188,7 @@ class WebApp:
             with self._lock:
                 self._reserved.discard(stem.lower())
             raise
-        job = Job(job_id, name, media, summarize, style_name, language)
+        job = Job(job_id, name, media, summarize, style_name, language, terms)
         with self._lock:
             self.jobs[job_id] = job
         self._queue.put(job)
@@ -245,7 +248,7 @@ class WebApp:
 
         result = process_file(
             job.media, transcriber, settings, self.output_dir, progress, status, job.stop,
-            style_name=job.style, language=job.language,
+            style_name=job.style, language=job.language, terms=job.terms,
         )
         with self._lock:
             job.paths = result.paths
@@ -395,6 +398,7 @@ class Handler(BaseHTTPRequestHandler):
                 summarize=query.get("summary", ["0"])[0] == "1",
                 style_name=query.get("style", [DEFAULT_STYLE])[0],
                 language=query.get("language", [DEFAULT_LANGUAGE])[0],
+                terms=query.get("terms", [""])[0],
             )
         except ValueError as exc:
             return self._error(400, str(exc))

@@ -86,6 +86,7 @@ def process_file(
     stop: Optional[threading.Event] = None,
     style_name: str = DEFAULT_STYLE,
     language: str = "he",
+    terms: str = "",
 ) -> Result:
     """Transcribe one file and write the results. A failed summary does not fail the file.
 
@@ -105,7 +106,7 @@ def process_file(
     if stop is not None and stop.is_set():
         raise Cancelled()
     paths.text.parent.mkdir(parents=True, exist_ok=True)
-    transcript = transcriber.transcribe(media, report)
+    transcript = transcriber.transcribe(media, report, terms=terms)
     if stop is not None and stop.is_set():
         raise Cancelled()
     _write(paths.text, transcript.text + "\n")
@@ -121,7 +122,9 @@ def process_file(
         on_status(f"Summarizing with {settings.model}...")
     def run_summary() -> str:
         source = transcript.timestamped_text() if summary_style.timestamps else transcript.text
-        return summarize(source, settings, title=media.stem, style_name=style_name, language=language)
+        return summarize(
+            source, settings, title=media.stem, style_name=style_name, language=language, terms=terms,
+        )
 
     try:
         summary = run_summary() if stop is None else _until_stopped(run_summary, stop)

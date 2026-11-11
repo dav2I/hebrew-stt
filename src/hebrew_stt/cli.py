@@ -53,6 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="language of the recordings: " + ", ".join(f"{c} ({p.label})" for c, p in LANGUAGES.items())
         + f". Default: {DEFAULT_LANGUAGE}",
     )
+    parser.add_argument(
+        "--terms", default="",
+        help='names and words that appear in the recordings, to help recognize them, e.g. "Dr. Cohen, Dijkstra"',
+    )
     parser.add_argument("--no-summary", action="store_true", help="only transcribe, even if an API key is set")
     parser.add_argument(
         "--style", choices=list(STYLES), default=DEFAULT_STYLE, metavar="STYLE",
@@ -117,7 +121,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             result = process_file(
                 path, transcriber, settings, args.output_dir, progress=bar, on_status=log.info,
-                style_name=args.style, language=args.language,
+                style_name=args.style, language=args.language, terms=args.terms,
             )
         except Exception as exc:
             bar.finish()
